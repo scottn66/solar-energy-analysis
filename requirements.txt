@@ -1,0 +1,8 @@
+requests
+pandas
+numpy
+matplotlib
+plotly
+pgeocode
+gdown
+kagglehub
