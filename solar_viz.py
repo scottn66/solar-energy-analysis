@@ -575,20 +575,23 @@ def chart_peer_scatter(r: SiteResult, row: dict) -> str:
 # ---------------------------------------------------------------------------
 # KPI card helper
 # ---------------------------------------------------------------------------
-def _kpi_card(label: str, value: str, subtitle: str, color: str = PALETTE["indigo"]) -> str:
-    """Generate HTML for a single KPI metric card."""
+def _kpi_card(label: str, value: str, subtitle: str, color: str = PALETTE["indigo"], tooltip: str = "") -> str:
+    """Generate HTML for a single KPI metric card with optional hover tooltip."""
+    tip_attrs = f'class="has-tip" data-tip="{tooltip}"' if tooltip else ""
     return f"""
-    <div style="
+    <div {tip_attrs} style="
         background: {PALETTE['bg_card']};
         border-radius: 12px;
         padding: 20px 24px;
         border: 1px solid {PALETTE['divider']};
         text-align: center;
         min-width: 160px;
+        cursor: {'help' if tooltip else 'default'};
+        position: relative;
     ">
         <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
                      color: {PALETTE['text_secondary']}; margin-bottom: 6px;">
-            {label}
+            {label} {'<span style="font-size:10px; opacity:0.6;">&#9432;</span>' if tooltip else ''}
         </div>
         <div style="font-size: 28px; font-weight: 700; color: {color}; line-height: 1.2;">
             {value}
@@ -713,22 +716,29 @@ def generate_report(
     kpi_cards = f"""
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
                 gap: 16px; margin: 24px 0;">
-        {_kpi_card("Net Cost", f"${r.net_cost:,.0f}", f"After {int(DEFAULTS.federal_itc*100)}% ITC", PALETTE['indigo'])}
-        {_kpi_card("LCOE", f"${r.lcoe:.3f}", "per kWh", score_color)}
-        {_kpi_card("Payback", f"{r.simple_payback_years:.1f} yr" if not math.isnan(r.simple_payback_years) else "N/A", "simple payback", payback_color)}
-        {_kpi_card("NPV", f"${r.npv:,.0f}", f"{DEFAULTS.system_life_years}-year horizon", npv_color)}
-        {_kpi_card("IRR", irr_display, "internal rate of return", irr_color)}
-        {_kpi_card("CO2 Avoided", f"{r.annual_co2_avoided_tons:.1f} t/yr", "metric tons", PALETTE['teal'])}
+        {_kpi_card("Net Cost", f"${r.net_cost:,.0f}", f"After {int(DEFAULTS.federal_itc*100)}% ITC", PALETTE['indigo'],
+            tooltip="What you actually pay after the federal Investment Tax Credit. Gross cost is ${:,.0f}.".format(r.gross_cost))}
+        {_kpi_card("LCOE", f"${r.lcoe:.3f}", "per kWh", score_color,
+            tooltip="Levelized Cost of Energy — the effective price of each kWh your panels produce over their lifetime, including install cost and maintenance. Lower is better. Compare to your retail rate.")}
+        {_kpi_card("Payback", f"{r.simple_payback_years:.1f} yr" if not math.isnan(r.simple_payback_years) else "N/A", "simple payback", payback_color,
+            tooltip="How many years until your cumulative electricity savings equal the net cost of the system. Under 7 years is excellent, 7-10 is good, over 15 is poor.")}
+        {_kpi_card("NPV", f"${r.npv:,.0f}", f"{DEFAULTS.system_life_years}-year horizon", npv_color,
+            tooltip="Net Present Value — the total profit (or loss) from the system in today's dollars, after accounting for the time value of money. Positive = the investment beats a {:.0%} return.".format(DEFAULTS.discount_rate))}
+        {_kpi_card("IRR", irr_display, "internal rate of return", irr_color,
+            tooltip="Internal Rate of Return — the annualized return on your solar investment. Compare to stock market (~10%) or savings accounts (~4%). Higher is better.")}
+        {_kpi_card("CO2 Avoided", f"{r.annual_co2_avoided_tons:.1f} t/yr", "metric tons", PALETTE['teal'],
+            tooltip="Metric tons of CO2 emissions avoided each year by displacing grid electricity with solar. Roughly equivalent to driving {:,.0f} fewer miles per year.".format(r.annual_co2_avoided_tons * 2480))}
     </div>
     """
 
     # --- Sub-score breakdown ---
     subscore_html = f"""
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0;">
-        <div style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
-                     border-radius: 10px; border: 1px solid {PALETTE['divider']};">
+        <div class="has-tip" data-tip="How much sunlight energy this location receives. Based on specific yield (kWh produced per kW installed). 1,800 kWh/kW is top-tier US solar (desert Southwest). Your site: {r.specific_yield:,.0f} kWh/kW."
+             style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
+                     border-radius: 10px; border: 1px solid {PALETTE['divider']}; cursor: help;">
             <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-                         color: {PALETTE['text_secondary']};">Resource (25%)</div>
+                         color: {PALETTE['text_secondary']};">Resource (25%) <span style="font-size:9px; opacity:0.6;">&#9432;</span></div>
             <div style="font-size: 22px; font-weight: 700; color: {PALETTE['amber']}; margin: 4px 0;">
                 {r.resource_score:.0%}
             </div>
@@ -736,10 +746,11 @@ def generate_report(
                 {r.specific_yield:,.0f} kWh/kW
             </div>
         </div>
-        <div style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
-                     border-radius: 10px; border: 1px solid {PALETTE['divider']};">
+        <div class="has-tip" data-tip="Blended financial score: 40% payback speed (yours: {r.simple_payback_years:.1f} yr), 40% LCOE vs retail rate (yours: ${r.lcoe:.3f} vs ${r.electricity_rate_used:.3f}), 20% NPV magnitude (yours: ${r.npv:,.0f}). This is the most heavily weighted component."
+             style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
+                     border-radius: 10px; border: 1px solid {PALETTE['divider']}; cursor: help;">
             <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-                         color: {PALETTE['text_secondary']};">Economics (50%)</div>
+                         color: {PALETTE['text_secondary']};">Economics (50%) <span style="font-size:9px; opacity:0.6;">&#9432;</span></div>
             <div style="font-size: 22px; font-weight: 700; color: {PALETTE['sage']}; margin: 4px 0;">
                 {r.economics_score:.0%}
             </div>
@@ -747,10 +758,11 @@ def generate_report(
                 Payback + LCOE + NPV
             </div>
         </div>
-        <div style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
-                     border-radius: 10px; border: 1px solid {PALETTE['divider']};">
+        <div class="has-tip" data-tip="How well the panels are physically oriented. Optimal: tilt angle equals latitude ({abs(float(row.get('lat', 37))):.0f}&deg;), azimuth faces true south (180&deg;). Your tilt deviation: {r.tilt_deviation:.0f}&deg;, azimuth deviation: {r.azimuth_deviation:.0f}&deg;."
+             style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
+                     border-radius: 10px; border: 1px solid {PALETTE['divider']}; cursor: help;">
             <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-                         color: {PALETTE['text_secondary']};">Site Fit (15%)</div>
+                         color: {PALETTE['text_secondary']};">Site Fit (15%) <span style="font-size:9px; opacity:0.6;">&#9432;</span></div>
             <div style="font-size: 22px; font-weight: 700; color: {PALETTE['teal']}; margin: 4px 0;">
                 {r.site_fit_score:.0%}
             </div>
@@ -758,10 +770,11 @@ def generate_report(
                 Tilt &Delta;{r.tilt_deviation:.0f}&deg; Az &Delta;{r.azimuth_deviation:.0f}&deg;
             </div>
         </div>
-        <div style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
-                     border-radius: 10px; border: 1px solid {PALETTE['divider']};">
+        <div class="has-tip" data-tip="How mature the local solar market is, based on the number of recent installations in your area. More installations = better installer competition, favorable policies, and streamlined permitting."
+             style="text-align: center; padding: 16px; background: {PALETTE['bg_card']};
+                     border-radius: 10px; border: 1px solid {PALETTE['divider']}; cursor: help;">
             <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-                         color: {PALETTE['text_secondary']};">Market (10%)</div>
+                         color: {PALETTE['text_secondary']};">Market (10%) <span style="font-size:9px; opacity:0.6;">&#9432;</span></div>
             <div style="font-size: 22px; font-weight: 700; color: {PALETTE['indigo_light']}; margin: 4px 0;">
                 {r.policy_score:.0%}
             </div>
@@ -908,6 +921,79 @@ def generate_report(
             font-size: 12px;
             border-top: 1px solid {PALETTE['divider']};
         }}
+        /* Tooltip system */
+        .has-tip {{
+            position: relative;
+        }}
+        .has-tip::after {{
+            content: attr(data-tip);
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: {PALETTE['indigo']};
+            color: white;
+            font-size: 12px;
+            font-weight: 400;
+            line-height: 1.5;
+            padding: 10px 14px;
+            border-radius: 8px;
+            white-space: normal;
+            width: 240px;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 50;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            letter-spacing: normal;
+            text-transform: none;
+        }}
+        .has-tip::before {{
+            content: '';
+            position: absolute;
+            bottom: calc(100% + 2px);
+            left: 50%;
+            transform: translateX(-50%);
+            border: 6px solid transparent;
+            border-top-color: {PALETTE['indigo']};
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 50;
+        }}
+        .has-tip:hover::after,
+        .has-tip:hover::before {{
+            opacity: 1;
+        }}
+
+        .score-tip {{
+            position: relative;
+            cursor: help;
+        }}
+        .score-tip::after {{
+            content: attr(data-tip);
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: {PALETTE['indigo']};
+            color: white;
+            font-size: 12px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            width: 260px;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 50;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            white-space: normal;
+        }}
+        .score-tip:hover::after {{
+            opacity: 1;
+        }}
+
         .prov-pill {{
             display: inline-block;
             font-size: 11px;
@@ -957,7 +1043,7 @@ def generate_report(
         <div>
             <div class="score-label">Viability Score</div>
         </div>
-        <div class="score-badge">{r.viability_score:.0f}</div>
+        <div class="score-badge score-tip" data-tip="Composite viability score (0-100). Weights: 25% solar resource quality, 50% financial returns, 15% panel orientation, 10% local market maturity. 80+ = Excellent, 65-79 = Good, 50-64 = Marginal, &lt;50 = Poor.">{r.viability_score:.0f}</div>
         {confidence_badge_html}
     </div>
 </div>
