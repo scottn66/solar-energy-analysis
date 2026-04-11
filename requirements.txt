@@ -6,3 +6,4 @@ plotly
 pgeocode
 gdown
 kagglehub
+python-dotenv
