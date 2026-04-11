@@ -73,7 +73,7 @@ def _base_layout(**overrides) -> dict:
         font=dict(family="Inter, IBM Plex Sans, -apple-system, sans-serif", color=PALETTE["text_primary"]),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=60, r=30, t=80, b=50),
+        margin=dict(l=60, r=30, t=100, b=50),
         xaxis=dict(
             gridcolor=PALETTE["grid_subtle"],
             gridwidth=1,
@@ -96,13 +96,13 @@ def _base_layout(**overrides) -> dict:
     return layout
 
 
-def _annotate_subtitle(fig: go.Figure, text: str, y: float = 1.02):
-    """Add a light subtitle annotation below the title."""
+def _annotate_subtitle(fig: go.Figure, text: str, y: float = 1.06):
+    """Add a light subtitle annotation just below the title, inside the top margin."""
     fig.add_annotation(
         text=f"<i>{text}</i>",
         xref="paper", yref="paper",
         x=0, y=y, showarrow=False,
-        font=dict(size=12, color=PALETTE["text_secondary"]),
+        font=dict(size=11, color=PALETTE["text_secondary"]),
         xanchor="left",
     )
 
@@ -1083,29 +1083,36 @@ def _build_tou_chart(rate_result, site_result: SiteResult) -> str:
     if prod_shape.sum() > 0:
         prod_shape = prod_shape / prod_shape.sum() * (site_result.year_production[0] / 365)
 
-    fig = go.Figure()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
     fig.add_trace(go.Scatter(
         x=hours, y=hourly_avg_rate,
         line=dict(color=PALETTE["amber"], width=3, shape="hv"),
-        name="Avg $/kWh", yaxis="y",
+        name="Avg $/kWh",
         hovertemplate="Hour %{x}<br>Rate: $%{y:.4f}/kWh<extra></extra>",
-    ))
+    ), secondary_y=False)
+
     fig.add_trace(go.Scatter(
         x=hours, y=prod_shape,
         fill="tozeroy", fillcolor="rgba(76, 175, 120, 0.2)",
         line=dict(color=PALETTE["sage"], width=2),
-        name="Avg daily kWh", yaxis="y2",
+        name="Avg daily kWh",
         hovertemplate="Hour %{x}<br>Production: %{y:.1f} kWh<extra></extra>",
-    ))
-    fig.update_layout(**_base_layout(
+    ), secondary_y=True)
+
+    fig.update_layout(
+        font=dict(family="Inter, IBM Plex Sans, sans-serif", color=PALETTE["text_primary"]),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=70, r=70, t=80, b=60),
         title=dict(text="<b>Hourly Rate vs Production Profile</b>", font=dict(size=18)),
-        height=380, xaxis_title="Hour of Day",
-        yaxis=dict(title="Rate ($/kWh)", titlefont=dict(color=PALETTE["amber"]),
-                   tickprefix="$", side="left", gridcolor=PALETTE["grid_subtle"]),
-        yaxis2=dict(title="Production (kWh)", titlefont=dict(color=PALETTE["sage"]),
-                    overlaying="y", side="right"),
+        height=400,
+        xaxis=dict(title="Hour of Day", dtick=2, showgrid=False),
         legend=dict(x=0.02, y=0.98),
-    ))
+        hoverlabel=dict(bgcolor=PALETTE["bg_card"], font_size=13, font_family="Inter, sans-serif"),
+    )
+    fig.update_yaxes(title_text="Rate ($/kWh)", tickprefix="$", secondary_y=False)
+    fig.update_yaxes(title_text="Production (kWh)", secondary_y=True, showgrid=False)
+
     _annotate_subtitle(fig, "The gap between when solar produces (midday) and when rates peak (evening) drives NEM 3.0 economics")
     _annotate_footnote(fig, f"Rate: {rate_result.rate_name} via {rate_result.source}")
     return fig.to_html(full_html=False, include_plotlyjs=False)
@@ -1141,8 +1148,37 @@ def _build_accordion(site_result: SiteResult, quote) -> str:
         rows_html += _row("Avg Export Rate", f"${e.avg_export_rate:.4f}/kWh")
     rows_html += _row("System Size", f"{quote.system_kw_used:.1f} kW")
     rows_html += _row("Sizing Method", quote.system_sizing_method)
+
+    # Human-readable assumption labels
+    _labels = {
+        "system_life_years": ("System Lifetime", "years", 0),
+        "degradation_rate": ("Panel Degradation", "%/yr", 1),
+        "discount_rate": ("Discount Rate", "%", 1),
+        "om_cost_per_kw_year": ("O&M Cost", "$/kW/yr", 0),
+        "federal_itc": ("Federal Tax Credit (ITC)", "%", 0),
+        "electricity_price_override": ("Electricity Rate Used", "$/kWh", 4),
+        "electricity_escalation": ("Rate Escalation", "%/yr", 1),
+        "nem_export_ratio": ("NEM Export Ratio", "", 2),
+        "self_consumption_rate": ("Self-Consumption", "%", 0),
+        "co2_intensity_tons_per_kwh": ("Grid CO2 Intensity", "t/kWh", 4),
+        "default_price_per_watt": ("Default Install Cost", "$/W", 2),
+    }
     for k, v in site_result.assumptions_used.items():
-        rows_html += _row(f"<code>{k}</code>", str(v))
+        if k.startswith("weight_"):
+            continue
+        label_info = _labels.get(k)
+        if label_info:
+            name, unit, decimals = label_info
+            if "%" in unit and isinstance(v, (int, float)) and v < 1:
+                display = f"{v * 100:.{decimals}f}{unit}"
+            elif "$" in unit:
+                display = f"${v:.{decimals}f} {unit.replace('$','').strip()}"
+            else:
+                display = f"{v:.{decimals}f} {unit}" if isinstance(v, float) else f"{v} {unit}"
+        else:
+            name = k.replace("_", " ").title()
+            display = str(v) if v is not None else "—"
+        rows_html += _row(name, display)
 
     uid = "accordion_assumptions"
     return f'''
@@ -1150,8 +1186,8 @@ def _build_accordion(site_result: SiteResult, quote) -> str:
         <div class="section-label" style="cursor:pointer;" onclick="
             var b=document.getElementById('{uid}');
             b.style.maxHeight=b.style.maxHeight?'':'2000px';
-            this.querySelector('.arr').textContent=b.style.maxHeight?'\\u25BE':'\\u25B8';
-        "><span class="arr">\\u25B8</span> What We Assumed — Full Provenance</div>
+            this.querySelector('.arr').textContent=b.style.maxHeight?'&#9662;':'&#9656;';
+        "><span class="arr">&#9656;</span> What We Assumed — Full Provenance</div>
         <div id="{uid}" style="max-height:0;overflow:hidden;transition:max-height 0.3s ease;">
             <div class="chart-card" style="margin-top:12px;">
                 <table style="width:100%;border-collapse:collapse;">{rows_html}</table>
