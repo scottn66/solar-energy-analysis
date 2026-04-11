@@ -1,102 +1,132 @@
 # Solar Energy Analysis - DATA 201
 
-Analyzing solar installation trends, costs, and energy production potential in the Bay Area using data from NREL, NASA POWER, and Berkeley Lab's Tracking the Sun dataset. Includes a full economics scoring engine and premium HTML report generator.
+Full-stack solar viability analysis: from a plain-text address to a premium analyst-grade HTML report with real utility rates, NEM export policy, and 25-year financial projections.
+
+## Data Flow
+
+```
+                          quote_from_location("95112")
+                                    |
+                 +------------------+------------------+
+                 |                                     |
+          solar_geocode.py                      solar_pvwatts.py
+          ZIP / Census / Nominatim              NREL PVWatts v8
+          "95112" -> (37.35, -121.89, CA)       -> 8,195 kWh/yr
+                 |                                     |
+                 +------------------+------------------+
+                                    |
+                 +------------------+------------------+
+                 |                                     |
+           solar_urdb.py                        solar_nem.py
+           URDB -> NREL v3 -> EIA fallback      NEM 3.0 / 1:1 / default
+           PG&E E-1: $0.32/kWh (TOU 8760hr)    CA: ~$0.055/kWh export
+                 |                                     |
+                 +------------------+------------------+
+                                    |
+                          solar_economics.py
+                          score_site() -> SiteResult
+                          viability: 94/100, payback: 5.7yr
+                                    |
+                 +------------------+------------------+
+                 |                                     |
+           solar_viz.py                           app.py
+           HTML report (7 charts)                 FastAPI + HTMX
+           provenance, TOU overlay                "Is solar worth it?"
+```
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/scottn66/solar-energy-analysis.git
+cd solar-energy-analysis
+pip install -r requirements.txt
+
+# Add your NREL API key
+cp .env.example .env
+# Edit .env and paste your key (get one free at developer.nrel.gov/signup)
+
+# Run a quote from the CLI
+python -m solar_fetch "San Jose, CA" --monthly-kwh 650 --output report.html
+
+# Or start the web app
+uvicorn app:app --reload
+# Open http://localhost:8000
+
+# Run all 59 tests
+pytest test_solar_economics.py test_integration.py -v
+```
 
 ## Project Structure
 
 ```
-solar_economics.py             # Core scoring engine (Part 1)
-test_solar_economics.py        # pytest suite — 39 tests (Part 2)
-solar_viz.py                   # Plotly HTML report generator (Part 3)
-sample_site.csv                # Sample San Jose site for testing
+Core Pipeline:
+  solar_geocode.py         Address -> (lat, lon, state, zip)
+  solar_pvwatts.py         (lat, lon) -> annual/monthly production
+  solar_urdb.py            (lat, lon) -> utility rate (flat/tiered/TOU)
+  solar_nem.py             (state, rate) -> export compensation
+  solar_fetch.py           Orchestrator: location string -> QuoteResult
+  solar_economics.py       Financial engine: score_site() -> SiteResult
 
-notebooks/
-  01_nrel_api.ipynb            # NREL PVWatts API exploration
-  02_nasa_api.ipynb            # NASA POWER API exploration
-  03_data_loading.ipynb        # Download & load Berkeley Lab data
-  04_eda_peninsula.ipynb       # Exploratory data analysis (Bay Area)
-  05_data_dictionary.ipynb     # Column definitions & data reference
-  06_pipeline.ipynb            # End-to-end integration pipeline
+Presentation:
+  solar_viz.py             Plotly HTML report generator (7 charts)
+  app.py                   FastAPI + HTMX web frontend
 
-docs/                          # Sprint notes, meeting minutes
+Tests:
+  test_solar_economics.py  39 tests: economics engine, sub-scores, edge cases
+  test_integration.py      20 tests: geocode, pvwatts, urdb, nem, pipeline, FastAPI
+
+Data:
+  data/uszips.csv          41,490 US ZIP centroids (pgeocode/GeoNames)
+  data/eia_state_rates_2025.csv   EIA residential averages by state
+  data/nem3_acc_2025.csv   CA NEM 3.0 avoided-cost approximation (12mo x 24hr)
+
+Notebooks:
+  notebooks/01_nrel_api.ipynb       NREL PVWatts API exploration
+  notebooks/02_nasa_api.ipynb       NASA POWER API exploration
+  notebooks/03_data_loading.ipynb   Berkeley Lab data download
+  notebooks/04_eda_peninsula.ipynb  Bay Area solar EDA
+  notebooks/05_data_dictionary.ipynb  Column reference
+  notebooks/06_pipeline.ipynb       Integration pipeline
 ```
 
-## Setup
+## CLI Examples
 
 ```bash
-# 1. Clone
-git clone https://github.com/scottn66/solar-energy-analysis.git
-cd solar-energy-analysis
+# Simple ZIP code
+python -m solar_fetch 95112
 
-# 2. Install dependencies
-pip install -r requirements.txt
+# Full address with bill-based sizing
+python -m solar_fetch "1600 Amphitheatre Pkwy, Mountain View, CA" --monthly-kwh 650
 
-# 3. API key (choose one)
-# Local: copy .env.example to .env and paste your NREL key
-cp .env.example .env
-# Colab: add NREL_API_KEY to the Secrets sidebar
+# Custom system size with HTML report output
+python -m solar_fetch "Boulder, CO" --system-kw 8 --output boulder_report.html
 
-# 4. Run tests to verify
-pytest test_solar_economics.py -v
+# Fast mode (NREL v3 rate, no URDB)
+python -m solar_fetch 95192 --fast
+
+# Future installation date (affects NEM policy)
+python -m solar_fetch "San Diego, CA" --install-date 2026-06-01
+
+# Verbose logging
+python -m solar_fetch 78701 -v
 ```
 
-Get a free NREL API key at [developer.nrel.gov/signup](https://developer.nrel.gov/signup/).
+## Data Sources and Freshness
 
-## Usage
+| Source | Used By | Cache TTL | Refresh Instructions |
+|--------|---------|-----------|---------------------|
+| **NREL PVWatts v8** | `solar_pvwatts.py` | 30 days | Automatic via API |
+| **OpenEI URDB** | `solar_urdb.py` | 7 days | Automatic via API |
+| **NREL Utility Rates v3** | `solar_urdb.py` (fallback) | 7 days | Automatic via API |
+| **US Census Geocoder** | `solar_geocode.py` | 30 days | Automatic via API |
+| **Nominatim/OSM** | `solar_geocode.py` (fallback) | 30 days | Automatic via API |
+| **EIA State Rates** | `data/eia_state_rates_2025.csv` | Bundled | Update annually from [EIA Table 5.6.A](https://www.eia.gov/electricity/monthly/epm_table_5_6_a.html) |
+| **US ZIP Centroids** | `data/uszips.csv` | Bundled | Regenerate from [GeoNames](https://www.geonames.org/) via pgeocode |
+| **CA NEM 3.0 ACC** | `data/nem3_acc_2025.csv` | Bundled | Approximate; update from [CPUC ACC](https://www.cpuc.ca.gov/industries-and-topics/electrical-energy/demand-side-management/net-energy-metering/nem-revisit/cost-effectiveness) |
+| **NEM State Policies** | `solar_nem.py` (hardcoded) | N/A | Review annually via [DSIRE](https://www.dsireusa.org/) |
 
-### Score a single site (Python)
-
-```python
-from solar_economics import score_site, Assumptions
-
-row = {"site_id": "my_site", "system_capacity_kw": 5, "pvwatts_ac_annual_kwh": 8195,
-       "state": "CA", "lat": 37.33, "tilt": 20, "azimuth": 180, "losses": 14,
-       "tts_median_price_per_watt": 3.80, "tts_recent_sample_size": 36000}
-
-result = score_site(row)
-print(f"Viability: {result.viability_score}/100 — {result.viability_label}")
-print(f"Payback: {result.simple_payback_years:.1f} yr | NPV: ${result.npv:,.0f}")
-```
-
-### Score a CSV (CLI)
-
-```bash
-python solar_economics.py sample_site.csv -o enriched.csv --json-dir reports/
-```
-
-### Generate HTML report
-
-```bash
-python solar_viz.py sample_site.csv -o solar_report.html
-```
-
-Or from Python:
-
-```python
-from solar_viz import generate_report
-generate_report([result], "report.html", rows=[row_dict])
-```
-
-### Override assumptions
-
-```python
-custom = Assumptions(
-    federal_itc=0.0,          # no tax credit
-    nem_export_ratio=0.25,    # NEM 3.0
-    electricity_escalation=0.04,
-    system_life_years=30,
-)
-result = score_site(row, assumptions=custom)
-```
-
-## Data Sources
-
-| Source | Description | Access |
-|--------|-------------|--------|
-| **NREL PVWatts v8** | Modeled solar production estimates | [API](https://developer.nrel.gov/docs/solar/pvwatts/v8/) (key required) |
-| **NASA POWER** | Hourly solar radiation & weather data | [API](https://power.larc.nasa.gov/) (open) |
-| **Tracking the Sun** | Real solar installation records (Berkeley Lab) | [Google Drive](https://drive.google.com/file/d/1NQh4TRC_IqDz2r5vfZuxDm6LGjEuexdu/view) |
-| **Kaggle Supplement** | Urban solar ROI dataset | [Kaggle](https://www.kaggle.com/datasets/shaistashahid/urban-solar-roi-and-sustainability) |
+All API responses are cached in `~/.solar_cache/` as SQLite databases via `requests_cache`.
 
 ## Assumptions Reference
 
@@ -104,53 +134,21 @@ Every parameter is overridable via the `Assumptions` dataclass.
 
 | Parameter | Default | Rationale |
 |-----------|---------|-----------|
-| `system_life_years` | 25 | Industry-standard warranty/analysis horizon for c-Si PV |
-| `degradation_rate` | 0.005 (0.5%/yr) | Median from NREL long-term field studies (Jordan & Kurtz 2013) |
+| `system_life_years` | 25 | Industry-standard warranty horizon for c-Si PV |
+| `degradation_rate` | 0.005 (0.5%/yr) | NREL long-term field studies (Jordan & Kurtz 2013) |
 | `discount_rate` | 0.06 (6%) | Nominal WACC for residential solar |
-| `om_cost_per_kw_year` | $20 | Covers inverter reserves, cleaning, monitoring (NREL ATB 2024) |
+| `om_cost_per_kw_year` | $20 | Inverter reserves, cleaning, monitoring (NREL ATB 2024) |
 | `federal_itc` | 0.30 (30%) | Investment Tax Credit under IRA through 2032 |
 | `electricity_escalation` | 0.025 (2.5%/yr) | EIA Annual Energy Outlook reference case |
-| `nem_export_ratio` | 0.75 | Fraction of retail credited for exports (1.0=NEM1, 0.75=NEM2, 0.25=NEM3) |
-| `self_consumption_rate` | 0.40 | Fraction consumed on-site at full retail (higher with battery) |
-| `co2_intensity_tons_per_kwh` | 0.0004 | US avg grid intensity, EPA eGRID 2022 |
-| `default_price_per_watt` | $3.50 | Fallback if TTS data missing (EnergySage 2024 median) |
-
-## Viability Score Formula
-
-**Composite score (0-100)** = weighted blend of four sub-scores:
-
-| Component | Weight | What it measures |
-|-----------|--------|-----------------|
-| **Resource** | 25% | Specific yield normalized against 1,800 kWh/kW ceiling |
-| **Economics** | 50% | Blend of payback bucket (40%), LCOE-vs-retail (40%), NPV magnitude (20%) |
-| **Site Fit** | 15% | Tilt deviation from latitude, azimuth deviation from 180°, excess losses |
-| **Policy/Market** | 10% | Log-scaled TTS recent sample size (local adoption signal) |
-
-### Thresholds
-
-| Metric | Excellent | Good | Marginal | Poor |
-|--------|-----------|------|----------|------|
-| Payback | <7 yr | 7-10 yr | 10-15 yr | >15 yr |
-| Grid parity ratio | <0.6 | 0.6-0.8 | 0.8-1.0 | >1.0 |
-| Viability score | >=80 | 65-79 | 50-64 | <50 |
-
-## Report Visualizations
-
-The HTML report includes 7 interactive charts:
-
-1. **Hero gauge** — viability score with threshold bands
-2. **Economics waterfall** — gross cost to net benefit flow
-3. **Cumulative cashflow** — breakeven curve with payback marker
-4. **LCOE vs retail** — grid parity comparison
-5. **Monthly production** — seasonal pattern estimate
-6. **Sensitivity tornado** — NPV under +/-20% parameter changes
-7. **Peer comparison** — this site vs Kaggle reference distribution
+| `nem_export_ratio` | 0.75 | Fraction of retail credited for exports |
+| `self_consumption_rate` | 0.40 | Fraction consumed on-site at full retail |
+| `co2_intensity_tons_per_kwh` | 0.0004 | US avg grid intensity (EPA eGRID 2022) |
+| `default_price_per_watt` | $3.50 | Fallback $/W if TTS missing (EnergySage 2024) |
 
 ## Agile Workflow
 
-We use **GitHub Issues** and **GitHub Projects** for task management:
-- Each notebook module has an assigned owner
-- Issues are labeled by sprint (`sprint-1`, `sprint-2`) and category
+We use GitHub Issues and GitHub Projects for task management:
+- Issues labeled by sprint (`sprint-1`, `sprint-2`) and category
 - See `CONTRIBUTING.md` for branching strategy and PR workflow
 
 ## Team

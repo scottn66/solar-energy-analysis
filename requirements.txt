@@ -7,3 +7,11 @@ pgeocode
 gdown
 kagglehub
 python-dotenv
+requests-cache
+numpy-financial
+fastapi
+uvicorn
+python-multipart
+httpx
+rich
+pytest

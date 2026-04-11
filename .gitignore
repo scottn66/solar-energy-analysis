@@ -33,3 +33,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# API response caches (generated at runtime)
+*.sqlite
+site_reports/
+solar_report.html

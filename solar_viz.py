@@ -607,6 +607,7 @@ def generate_report(
     results: list[SiteResult],
     output_path: str,
     rows: Optional[list[dict]] = None,
+    quote=None,
 ) -> str:
     """
     Generate a standalone HTML report for one or more scored sites.
@@ -619,6 +620,10 @@ def generate_report(
         Path to write the HTML file.
     rows : list[dict], optional
         Original row dicts (needed for sensitivity tornado).
+    quote : QuoteResult, optional
+        Full quote result from solar_fetch.quote_from_location().
+        When present, adds provenance strip, confidence badge, and
+        expanded "What we assumed" accordion.
 
     Returns
     -------
@@ -638,6 +643,54 @@ def generate_report(
         score_color = PALETTE["amber_warn"]
     else:
         score_color = PALETTE["coral"]
+
+    # --- Build provenance strip (if quote provided) ---
+    provenance_html = ""
+    confidence_badge_html = ""
+    tou_chart_html = ""
+    accordion_html = ""
+
+    if quote is not None:
+        # Provenance pills
+        pills = []
+        if hasattr(quote, 'rate_result') and quote.rate_result:
+            rr = quote.rate_result
+            utility_pill = f'<span class="prov-pill">Utility: {rr.utility_name}</span>'
+            rate_pill = f'<span class="prov-pill">Rate: {rr.rate_name}</span>'
+            source_pill = f'<span class="prov-pill">Source: {rr.source}</span>'
+            if rr.rate_uri:
+                rate_pill = f'<a href="{rr.rate_uri}" class="prov-pill" target="_blank">Rate: {rr.rate_name}</a>'
+            pills.extend([utility_pill, rate_pill, source_pill])
+        if hasattr(quote, 'export_result') and quote.export_result:
+            pills.append(f'<span class="prov-pill">Export: {quote.export_result.policy_name}</span>')
+        if hasattr(quote, 'geocode_result') and quote.geocode_result:
+            pills.append(f'<span class="prov-pill">Geocode: {quote.geocode_result.source} ({quote.geocode_result.confidence})</span>')
+
+        provenance_html = f'''
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 40px;
+                     background: {PALETTE["bg_page"]}; border-bottom: 1px solid {PALETTE["divider"]};">
+            {"".join(pills)}
+        </div>
+        '''
+
+        # Confidence badge
+        conf = quote.confidence_level
+        _conf_colors = {"high": PALETTE["sage"], "medium": PALETTE["amber_warn"], "low": PALETTE["coral"]}
+        conf_color = _conf_colors.get(conf, PALETTE["slate"])
+        conf_tooltip = " | ".join(quote.confidence_reasons) if hasattr(quote, 'confidence_reasons') else ""
+        confidence_badge_html = (
+            f'<span style="background: {conf_color}; color: white; font-size: 11px;'
+            f' padding: 3px 10px; border-radius: 12px; margin-left: 12px;'
+            f' cursor: help;" title="{conf_tooltip}">'
+            f'{conf.upper()} CONFIDENCE</span>'
+        )
+
+        # TOU chart (if rate has hourly data)
+        if hasattr(quote, 'rate_result') and quote.rate_result.hourly_rates is not None and quote.rate_result.is_tou:
+            tou_chart_html = _build_tou_chart(quote.rate_result, r)
+
+        # Accordion: "What we assumed"
+        accordion_html = _build_accordion(r, quote)
 
     # --- Build chart HTML ---
     hero_html = chart_hero_gauge(r)
@@ -855,6 +908,36 @@ def generate_report(
             font-size: 12px;
             border-top: 1px solid {PALETTE['divider']};
         }}
+        .prov-pill {{
+            display: inline-block;
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 16px;
+            background: {PALETTE['bg_card']};
+            border: 1px solid {PALETTE['divider']};
+            color: {PALETTE['text_secondary']};
+            text-decoration: none;
+            font-variant: small-caps;
+        }}
+        .prov-pill:hover {{
+            border-color: {PALETTE['indigo']};
+            color: {PALETTE['indigo']};
+        }}
+        .accordion-header {{
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .accordion-body {{
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }}
+        .accordion-body.open {{
+            max-height: 2000px;
+        }}
         @media (max-width: 768px) {{
             .grid-2 {{ grid-template-columns: 1fr; }}
             .sticky-header {{ padding: 12px 20px; }}
@@ -875,8 +958,10 @@ def generate_report(
             <div class="score-label">Viability Score</div>
         </div>
         <div class="score-badge">{r.viability_score:.0f}</div>
+        {confidence_badge_html}
     </div>
 </div>
+{provenance_html}
 
 <div class="container">
 
@@ -956,6 +1041,10 @@ def generate_report(
         </div>
     </div>
 
+    {f'<div class="section"><div class="section-label">Rate Schedule</div><div class="chart-card">{tou_chart_html}</div></div>' if tou_chart_html else ''}
+
+    {accordion_html}
+
 </div>
 
 <div class="footer">
@@ -970,6 +1059,123 @@ def generate_report(
         f.write(html)
 
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# New helpers for quote-aware reports
+# ---------------------------------------------------------------------------
+
+def _build_tou_chart(rate_result, site_result: SiteResult) -> str:
+    """Build a 24-hour TOU rate profile chart with production overlay."""
+    if rate_result.hourly_rates is None:
+        return ""
+
+    hrs = rate_result.hourly_rates
+    hourly_avg_rate = np.zeros(24)
+    for h in range(24):
+        hourly_avg_rate[h] = np.mean(hrs[h::24])
+
+    hours = list(range(24))
+    prod_shape = np.array([
+        max(0, np.sin(np.pi * (h - 6) / 12)) if 6 <= h <= 18 else 0
+        for h in range(24)
+    ])
+    if prod_shape.sum() > 0:
+        prod_shape = prod_shape / prod_shape.sum() * (site_result.year_production[0] / 365)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=hours, y=hourly_avg_rate,
+        line=dict(color=PALETTE["amber"], width=3, shape="hv"),
+        name="Avg $/kWh", yaxis="y",
+        hovertemplate="Hour %{x}<br>Rate: $%{y:.4f}/kWh<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=hours, y=prod_shape,
+        fill="tozeroy", fillcolor="rgba(76, 175, 120, 0.2)",
+        line=dict(color=PALETTE["sage"], width=2),
+        name="Avg daily kWh", yaxis="y2",
+        hovertemplate="Hour %{x}<br>Production: %{y:.1f} kWh<extra></extra>",
+    ))
+    fig.update_layout(**_base_layout(
+        title=dict(text="<b>Hourly Rate vs Production Profile</b>", font=dict(size=18)),
+        height=380, xaxis_title="Hour of Day",
+        yaxis=dict(title="Rate ($/kWh)", titlefont=dict(color=PALETTE["amber"]),
+                   tickprefix="$", side="left", gridcolor=PALETTE["grid_subtle"]),
+        yaxis2=dict(title="Production (kWh)", titlefont=dict(color=PALETTE["sage"]),
+                    overlaying="y", side="right"),
+        legend=dict(x=0.02, y=0.98),
+    ))
+    _annotate_subtitle(fig, "The gap between when solar produces (midday) and when rates peak (evening) drives NEM 3.0 economics")
+    _annotate_footnote(fig, f"Rate: {rate_result.rate_name} via {rate_result.source}")
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
+def _build_accordion(site_result: SiteResult, quote) -> str:
+    """Build a collapsible 'What we assumed' provenance section."""
+    rows_html = ""
+
+    def _row(label, value):
+        return (f'<tr><td style="padding:5px 10px;font-size:12px;color:{PALETTE["text_secondary"]};">'
+                f'{label}</td><td style="padding:5px 10px;font-size:12px;text-align:right;">'
+                f'{value}</td></tr>')
+
+    if hasattr(quote, 'geocode_result') and quote.geocode_result:
+        g = quote.geocode_result
+        rows_html += _row("Resolved Address", g.resolved_address)
+        rows_html += _row("Coordinates", f"{g.lat:.4f}, {g.lon:.4f}")
+        rows_html += _row("Geocode Source", f"{g.source} ({g.confidence})")
+    if hasattr(quote, 'pvwatts_result') and quote.pvwatts_result:
+        p = quote.pvwatts_result
+        rows_html += _row("PVWatts Station Distance", f"{p.pvwatts_station_distance_m:,.0f} m")
+    if hasattr(quote, 'rate_result') and quote.rate_result:
+        rr = quote.rate_result
+        rows_html += _row("Utility", rr.utility_name)
+        rows_html += _row("Rate Schedule", rr.rate_name)
+        rows_html += _row("Rate Source", rr.source)
+        rows_html += _row("TOU Rate", "Yes" if rr.is_tou else "No")
+        rows_html += _row("Fixed Monthly Charge", f"${rr.fixed_monthly_charge:.2f}")
+    if hasattr(quote, 'export_result') and quote.export_result:
+        e = quote.export_result
+        rows_html += _row("Export Policy", e.policy_name)
+        rows_html += _row("Avg Export Rate", f"${e.avg_export_rate:.4f}/kWh")
+    rows_html += _row("System Size", f"{quote.system_kw_used:.1f} kW")
+    rows_html += _row("Sizing Method", quote.system_sizing_method)
+    for k, v in site_result.assumptions_used.items():
+        rows_html += _row(f"<code>{k}</code>", str(v))
+
+    uid = "accordion_assumptions"
+    return f'''
+    <div class="section">
+        <div class="section-label" style="cursor:pointer;" onclick="
+            var b=document.getElementById('{uid}');
+            b.style.maxHeight=b.style.maxHeight?'':'2000px';
+            this.querySelector('.arr').textContent=b.style.maxHeight?'\\u25BE':'\\u25B8';
+        "><span class="arr">\\u25B8</span> What We Assumed — Full Provenance</div>
+        <div id="{uid}" style="max-height:0;overflow:hidden;transition:max-height 0.3s ease;">
+            <div class="chart-card" style="margin-top:12px;">
+                <table style="width:100%;border-collapse:collapse;">{rows_html}</table>
+            </div>
+        </div>
+    </div>
+    '''
+
+
+def generate_report_html(
+    results: list[SiteResult],
+    rows: Optional[list[dict]] = None,
+    quote=None,
+    embed_mode: bool = False,
+) -> str:
+    """Generate report HTML as a string (for FastAPI responses)."""
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
+        tmp_path = f.name
+    generate_report(results, tmp_path, rows=rows, quote=quote)
+    with open(tmp_path, "r") as f:
+        html = f.read()
+    os.unlink(tmp_path)
+    return html
 
 
 # ---------------------------------------------------------------------------
