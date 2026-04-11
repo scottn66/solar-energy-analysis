@@ -1,7 +1,14 @@
 # Data files (too large for git)
-*.csv
 *.zip
 *.parquet
+
+# Large data CSVs (downloaded at runtime)
+TTS_LBNL_*.csv
+solar_master_feature_table.csv
+enriched_sites.csv
+
+# Keep sample data files
+# !sample_site.csv is small and committed
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
