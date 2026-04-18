@@ -195,11 +195,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full details. Quick version:
 
 ---
 
-## Team
+## Deep Dives
 
-| Member | Focus Area |
-|--------|-----------|
-| | |
-| | |
-| | |
-| | |
+For more detail, see the docs:
+
+- **[Architecture Overview](docs/ARCHITECTURE.md)** — module map, where to find things, caching strategy
+- **[Assumptions Reference](docs/ASSUMPTIONS.md)** — every number in the model with source, rationale, and how to override
+- **[Contributing Guide](CONTRIBUTING.md)** — branching strategy, PR workflow, commit conventions
