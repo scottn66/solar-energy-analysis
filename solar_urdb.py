@@ -734,14 +734,17 @@ def get_rate(
             from datetime import timedelta
             age = date.today() - urdb_result.effective_date
             if age > timedelta(days=3 * 365):
-                eia_rates = _load_eia_state_rates()
-                eia_rate = eia_rates.get(state.strip().upper())
+                # Use live EIA API for the current rate (falls back to CSV internally)
+                from solar_eia import get_state_rate
+                eia_rate, eia_period, eia_source = get_state_rate(state)
+
                 if eia_rate and eia_rate > urdb_result.flat_rate * 1.5:
                     logger.warning(
                         "URDB rate ($%.4f from %s) is >3 years old and %.0f%% below "
-                        "EIA state average ($%.4f). Checking for bundled TOU schedule.",
+                        "EIA %s rate ($%.4f, %s). Checking for bundled TOU schedule.",
                         urdb_result.flat_rate, urdb_result.effective_date,
-                        (1 - urdb_result.flat_rate / eia_rate) * 100, eia_rate,
+                        (1 - urdb_result.flat_rate / eia_rate) * 100,
+                        eia_source, eia_rate, eia_period,
                     )
                     # Try bundled TOU first — preserves peak/off-peak structure
                     bundled = _load_bundled_tou(urdb_result.utility_name)
@@ -752,15 +755,15 @@ def get_rate(
                         )
                         return bundled
 
-                    # Fall back to flat EIA rate
+                    # Fall back to flat EIA rate (now potentially live data)
                     return RateResult(
                         flat_rate=eia_rate,
                         hourly_rates=None,
                         fixed_monthly_charge=urdb_result.fixed_monthly_charge,
                         utility_name=urdb_result.utility_name,
-                        rate_name=f"EIA {state.upper()} avg (URDB rate was stale: {urdb_result.rate_name})",
+                        rate_name=f"EIA {state.upper()} {eia_period} (URDB was stale: {urdb_result.rate_name})",
                         rate_uri="https://www.eia.gov/electricity/monthly/epm_table_5_6_a.html",
-                        source="eia_staleness_override",
+                        source=eia_source,
                         effective_date=None,
                         is_tou=False,
                         is_tiered=False,
@@ -789,30 +792,29 @@ def get_rate(
             exc,
         )
 
-    # --- Fallback 3: EIA state-level average ---
+    # --- Fallback 3: EIA state-level average (live API → bundled CSV) ---
     if state:
         state_upper = state.strip().upper()
         try:
-            eia_rates = _load_eia_state_rates()
-            rate = eia_rates.get(state_upper)
+            from solar_eia import get_state_rate
+            rate, period, source = get_state_rate(state_upper)
             if rate is not None:
                 logger.warning(
-                    "Using EIA state-level fallback for %s: $%.4f/kWh.",
-                    state_upper,
-                    rate,
+                    "Using EIA fallback for %s: $%.4f/kWh (%s, %s).",
+                    state_upper, rate, period, source,
                 )
                 return RateResult(
                     flat_rate=rate,
                     hourly_rates=None,
                     fixed_monthly_charge=0.0,
                     utility_name=f"EIA state average ({state_upper})",
-                    rate_name=f"EIA 2024 residential average -- {state_upper}",
+                    rate_name=f"EIA {period} residential -- {state_upper}",
                     rate_uri="https://www.eia.gov/electricity/monthly/epm_table_5_6_a.html",
-                    source="eia_state_fallback",
+                    source=source,
                     effective_date=None,
                     is_tou=False,
                     is_tiered=False,
-                    raw={"state": state_upper, "rate": rate},
+                    raw={"state": state_upper, "rate": rate, "period": period},
                 )
             else:
                 logger.warning(

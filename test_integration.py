@@ -192,8 +192,8 @@ class TestURDB:
             with patch("solar_urdb.fetch_rate_fast", side_effect=Exception("v3 down")):
                 result = get_rate(37.35, -121.89, state="CA")
 
-        assert result.source == "eia_state_fallback"
-        assert result.flat_rate == 0.32  # CA EIA rate
+        assert result.source in ("eia_live", "eia_bundled_2025", "eia_state_fallback")
+        assert result.flat_rate > 0.25  # CA rate should be $0.25+ regardless of source
 
     def test_flat_rate_parsing(self, mock_urdb_response):
         """A flat URDB rate should be parsed correctly."""
