@@ -628,7 +628,42 @@ def get_rate(
     """
     # --- Fallback 1: Full URDB ---
     try:
-        return fetch_rate(lat, lon, sector=sector)
+        urdb_result = fetch_rate(lat, lon, sector=sector)
+
+        # Staleness guard: if the URDB rate data is more than 3 years old,
+        # check against the EIA state average.  URDB has stale entries for
+        # many large utilities (e.g., PG&E rates from 2014 at $0.15 when
+        # the real current rate is $0.32).  If the EIA rate is significantly
+        # higher, use EIA instead — the URDB structure is accurate but the
+        # dollar amounts are outdated.
+        if state and urdb_result.effective_date:
+            from datetime import timedelta
+            age = date.today() - urdb_result.effective_date
+            if age > timedelta(days=3 * 365):
+                eia_rates = _load_eia_state_rates()
+                eia_rate = eia_rates.get(state.strip().upper())
+                if eia_rate and eia_rate > urdb_result.flat_rate * 1.5:
+                    logger.warning(
+                        "URDB rate ($%.4f from %s) is >3 years old and %.0f%% below "
+                        "EIA state average ($%.4f). Using EIA rate instead.",
+                        urdb_result.flat_rate, urdb_result.effective_date,
+                        (1 - urdb_result.flat_rate / eia_rate) * 100, eia_rate,
+                    )
+                    return RateResult(
+                        flat_rate=eia_rate,
+                        hourly_rates=None,
+                        fixed_monthly_charge=urdb_result.fixed_monthly_charge,
+                        utility_name=urdb_result.utility_name,
+                        rate_name=f"EIA {state.upper()} avg (URDB rate was stale: {urdb_result.rate_name})",
+                        rate_uri="https://www.eia.gov/electricity/monthly/epm_table_5_6_a.html",
+                        source="eia_staleness_override",
+                        effective_date=None,
+                        is_tou=False,
+                        is_tiered=False,
+                        raw=urdb_result.raw,
+                    )
+
+        return urdb_result
     except Exception as exc:
         logger.warning(
             "fetch_rate failed (lat=%.4f, lon=%.4f): %s. "

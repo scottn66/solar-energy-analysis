@@ -202,3 +202,19 @@ For more detail, see the docs:
 - **[Architecture Overview](docs/ARCHITECTURE.md)** — module map, where to find things, caching strategy
 - **[Assumptions Reference](docs/ASSUMPTIONS.md)** — every number in the model with source, rationale, and how to override
 - **[Contributing Guide](CONTRIBUTING.md)** — branching strategy, PR workflow, commit conventions
+
+---
+
+## Team
+
+| Member | Focus Area |
+|--------|-----------|
+| Scott | Pipeline architecture, economics engine, visualization |
+| Sayli | *(unclaimed — see suggested areas below)* |
+| Shraddha | *(unclaimed — see suggested areas below)* |
+
+**Good areas to pick up:**
+- **EDA & storytelling** — the notebooks (04_eda_peninsula) have charts but need narrative and insights written up
+- **Data quality** — validate the pipeline against known solar installations; are the numbers realistic?
+- **New locations** — run the tool on different states/utilities and document how results compare
+- **Presentation** — turn the report outputs into slides for the final project presentation
