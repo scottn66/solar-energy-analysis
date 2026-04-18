@@ -23,4 +23,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
+        # Dummy API keys — all HTTP is mocked in the test suite, but the
+        # modules assert the keys exist at call time. Real keys are not
+        # needed (and should not be exposed) in CI.
+        env:
+          NREL_API_KEY: dummy_key_for_ci
+          EIA_API_KEY: dummy_key_for_ci
         run: pytest test_solar_economics.py test_integration.py -v
