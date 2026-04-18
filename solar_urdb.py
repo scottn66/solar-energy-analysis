@@ -312,6 +312,100 @@ def _load_eia_state_rates() -> dict[str, float]:
     return rates
 
 
+def _load_bundled_tou(utility_name: str) -> RateResult | None:
+    """Load a bundled TOU rate schedule for a known utility.
+
+    Falls back to bundled data/utility_tou_schedules.csv when the URDB has
+    stale rates.  Currently covers PG&E, SCE, and SDG&E — the three CA IOUs.
+
+    The bundled file contains peak/off-peak rates by season.  This function
+    expands them into a full 8760-hour rate vector using a standard calendar
+    (2024 as reference, summer = Jun-Sep, winter = Oct-May).
+
+    Returns None if the utility isn't in the bundled file.
+    """
+    csv_path = Path(__file__).resolve().parent / "data" / "utility_tou_schedules.csv"
+    if not csv_path.exists():
+        return None
+
+    # Normalize utility name for matching
+    name_lower = utility_name.lower()
+    utility_key = None
+    if "pacific gas" in name_lower or "pg&e" in name_lower or "pg+e" in name_lower:
+        utility_key = "PG&E"
+    elif "southern california edison" in name_lower or "sce" in name_lower:
+        utility_key = "SCE"
+    elif "san diego" in name_lower or "sdge" in name_lower or "sdg&e" in name_lower:
+        utility_key = "SDG&E"
+
+    if utility_key is None:
+        return None
+
+    # Parse the CSV
+    rows_by_season: dict[str, list[dict]] = {"summer": [], "winter": []}
+    rate_name = ""
+    fixed_monthly = 0.0
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        lines = (line for line in fh if not line.startswith("#"))
+        reader = csv.DictReader(lines)
+        for row in reader:
+            if row.get("utility", "").strip() == utility_key:
+                rate_name = row.get("rate_name", "")
+                fixed_monthly = float(row.get("fixed_monthly", 0))
+                season = row.get("season", "").strip().lower()
+                if season in rows_by_season:
+                    rows_by_season[season].append({
+                        "start": int(row["start_hour"]),
+                        "end": int(row["end_hour"]),
+                        "rate": float(row["rate_dollars_per_kwh"]),
+                    })
+
+    if not rows_by_season["summer"] and not rows_by_season["winter"]:
+        return None
+
+    # Build 8760-hour vector using a standard non-leap year
+    # Summer months: June (5) through September (8), 0-indexed
+    summer_months = {5, 6, 7, 8}
+    days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # standard year
+    hourly_rates = np.zeros(8760, dtype=np.float64)
+    hour_idx = 0
+
+    for month in range(12):
+        season = "summer" if month in summer_months else "winter"
+        period_rows = rows_by_season[season]
+        for day in range(days_in_month[month]):
+            for hour in range(24):
+                rate = 0.0
+                for pr in period_rows:
+                    if pr["start"] <= hour < pr["end"]:
+                        rate = pr["rate"]
+                        break
+                hourly_rates[hour_idx] = rate
+                hour_idx += 1
+
+    flat_avg = float(np.mean(hourly_rates))
+
+    logger.info(
+        "Loaded bundled TOU schedule: %s %s (avg $%.4f/kWh, peak $%.4f, off-peak $%.4f)",
+        utility_key, rate_name, flat_avg,
+        float(np.max(hourly_rates)), float(np.min(hourly_rates[hourly_rates > 0])),
+    )
+
+    return RateResult(
+        flat_rate=flat_avg,
+        hourly_rates=hourly_rates,
+        fixed_monthly_charge=fixed_monthly,
+        utility_name=utility_name,
+        rate_name=f"{rate_name} (bundled 2024 schedule)",
+        rate_uri="",
+        source="bundled_tou",
+        effective_date=date(2024, 1, 1),
+        is_tou=True,
+        is_tiered=False,
+        raw={},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API: fetch_rate_fast (NREL Utility Rates v3 -- simple fallback)
 # ---------------------------------------------------------------------------
@@ -645,10 +739,20 @@ def get_rate(
                 if eia_rate and eia_rate > urdb_result.flat_rate * 1.5:
                     logger.warning(
                         "URDB rate ($%.4f from %s) is >3 years old and %.0f%% below "
-                        "EIA state average ($%.4f). Using EIA rate instead.",
+                        "EIA state average ($%.4f). Checking for bundled TOU schedule.",
                         urdb_result.flat_rate, urdb_result.effective_date,
                         (1 - urdb_result.flat_rate / eia_rate) * 100, eia_rate,
                     )
+                    # Try bundled TOU first — preserves peak/off-peak structure
+                    bundled = _load_bundled_tou(urdb_result.utility_name)
+                    if bundled is not None:
+                        logger.info(
+                            "Using bundled TOU schedule for %s ($%.4f avg)",
+                            bundled.rate_name, bundled.flat_rate,
+                        )
+                        return bundled
+
+                    # Fall back to flat EIA rate
                     return RateResult(
                         flat_rate=eia_rate,
                         hourly_rates=None,

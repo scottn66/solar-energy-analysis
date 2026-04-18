@@ -1,0 +1,30 @@
+# Bundled TOU rate schedules for major CA utilities
+# Source: Utility tariff books (published rate schedules)
+# PG&E: https://www.pge.com/tariffs/electric.shtml (E-TOU-C, effective 2024)
+# SCE:  https://www.sce.com/residential/rates (TOU-D-4-9PM, effective 2024)
+# SDG&E: https://www.sdge.com/residential/pricing-plans (TOU-DR1, effective 2024)
+# Snapshot date: 2025-03
+# TODO: Refresh annually from published tariff PDFs
+# NOTE: Rates include all charges (generation, transmission, distribution).
+#       Actual bills vary by baseline territory, usage tier, and CARE/FERA discounts.
+#
+# Columns: utility, rate_name, season, period, start_hour, end_hour, rate_dollars_per_kwh, fixed_monthly
+utility,rate_name,season,period,start_hour,end_hour,rate_dollars_per_kwh,fixed_monthly
+PG&E,E-TOU-C,summer,off_peak,0,16,0.38,10.50
+PG&E,E-TOU-C,summer,peak,16,21,0.54,10.50
+PG&E,E-TOU-C,summer,off_peak,21,24,0.38,10.50
+PG&E,E-TOU-C,winter,off_peak,0,16,0.37,10.50
+PG&E,E-TOU-C,winter,peak,16,21,0.40,10.50
+PG&E,E-TOU-C,winter,off_peak,21,24,0.37,10.50
+SCE,TOU-D-4-9PM,summer,off_peak,0,16,0.36,12.00
+SCE,TOU-D-4-9PM,summer,peak,16,21,0.56,12.00
+SCE,TOU-D-4-9PM,summer,off_peak,21,24,0.36,12.00
+SCE,TOU-D-4-9PM,winter,off_peak,0,16,0.36,12.00
+SCE,TOU-D-4-9PM,winter,peak,16,21,0.43,12.00
+SCE,TOU-D-4-9PM,winter,off_peak,21,24,0.36,12.00
+SDG&E,TOU-DR1,summer,off_peak,0,16,0.42,16.00
+SDG&E,TOU-DR1,summer,peak,16,21,0.65,16.00
+SDG&E,TOU-DR1,summer,off_peak,21,24,0.42,16.00
+SDG&E,TOU-DR1,winter,off_peak,0,16,0.40,16.00
+SDG&E,TOU-DR1,winter,peak,16,21,0.47,16.00
+SDG&E,TOU-DR1,winter,off_peak,21,24,0.40,16.00
