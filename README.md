@@ -201,6 +201,7 @@ For more detail, see the docs:
 
 - **[Architecture Overview](docs/ARCHITECTURE.md)** — module map, where to find things, caching strategy
 - **[Assumptions Reference](docs/ASSUMPTIONS.md)** — every number in the model with source, rationale, and how to override
+- **[Test Suite Reference](docs/TESTS.md)** — all 59 tests explained, what each one protects against, how to run them
 - **[Contributing Guide](CONTRIBUTING.md)** — branching strategy, PR workflow, commit conventions
 
 ---
