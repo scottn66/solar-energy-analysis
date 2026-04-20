@@ -1,262 +1,215 @@
 # Solar Energy Analysis
 
-**DATA 201 Group Project**
+**DATA 201 Group Project** &nbsp;·&nbsp; Scott Nelson, Sayli, Shraddha
 
-> *"Is solar worth it at this address?"* — Type any US address or ZIP code and get a full financial analysis with interactive charts.
+> *"Is solar worth it at this address?"* — Type any US address or ZIP code, get a financial analysis with 8 interactive charts in under a second.
 
 ---
 
-## Getting Started (for team members)
+## 1 · Intention
 
-### 1. Clone the repo
+**Problem.** Residential solar economics are hard to evaluate. The real numbers depend on your local utility's current rate structure, your state's net-metering policy, local installation costs, and the physical site's solar resource. Consumer-facing calculators (EnergySage, Project Sunroof) wrap these in a sales funnel; they don't show you the math or let you challenge the assumptions.
+
+**Goal.** Build an honest, transparent solar viability tool that:
+1. Pulls data from authoritative federal sources (NREL, EIA, OpenEI URDB, NASA).
+2. Runs a 25-year cashflow model with every assumption documented and overridable.
+3. Produces a single-page HTML report with hover tooltips explaining what each metric means.
+4. Works for any US address without signup, tracking, or lead capture.
+
+**Audience.** Our classmates, our instructor, and anyone curious whether a specific address makes sense for solar.
+
+---
+
+## 2 · Methodology — OLTP / OLAP split
+
+The project separates *transactional* work (one quote at a time, served fast) from *analytical* work (batch aggregations, trend analysis, EDA across many quotes). This is the standard data-engineering pattern and it gives us three concrete benefits: the web app is fast, API keys live in one place only, and teammates can run unlimited SQL against a shared history without hitting rate limits.
+
+```
+   OLTP (per-request, low-latency)        OLAP (batch, analytical)
+   ──────────────────────────────         ────────────────────────────────
+   app.py                                 Teammates running EDA
+   "Score this one address, now"          "How does score vary by state?"
+                │                                        │
+                ▼                                        ▼
+            ┌─────────────────────────────────────────────────┐
+            │  data/warehouse/solar.duckdb                    │
+            │  (5 raw_* staging tables — shared source of     │
+            │   truth with JSON response history preserved)   │
+            └─────────────────────────┬───────────────────────┘
+                                      ▲
+                                      │  (only on cache miss)
+                                      │
+                            solar_etl.py → live APIs
+                            (ONLY code path that needs
+                             NREL + EIA keys)
+```
+
+**The three layers in one sentence each:**
+
+| Layer | What it does | Who runs it |
+|---|---|---|
+| **OLTP** — `app.py` | Checks warehouse first; cache hit = rebuild report in <100ms. | End users via `uvicorn app:app` |
+| **ETL** — `solar_etl.py` | Runs the full pipeline; persists every intermediate result. | Scott (the one with API keys) |
+| **OLAP** — `solar.duckdb` | Queryable history: every quote, rate lookup, and API response. | Sayli & Shraddha for EDA |
+
+**Why DuckDB** (not Postgres, BigQuery, SQLite): single file committable to git, columnar storage for fast aggregations, zero config, proper SQL dialect including window functions and `QUALIFY`. Meets the "simple for teammates" requirement without sacrificing capability.
+
+---
+
+## 3 · Scope
+
+### In scope
+- **Geographies:** any US address or 5-digit ZIP code.
+- **System sizing:** user-specified kW, bill-sized from monthly kWh, or default 5 kW.
+- **Rate data:** URDB (with staleness detection → bundled TOU schedule for PG&E/SCE/SDG&E → EIA state average → US median).
+- **NEM policies:** California NEM 3.0 avoided-cost, 1:1 net metering for 23 states, reduced/deregulated fallbacks.
+- **Financial model:** 25-year cashflow with degradation, escalation, ITC, O&M, NEM export; produces LCOE, payback, NPV, IRR, viability score.
+
+### Out of scope (deliberately)
+- **Batteries** — model assumes no on-site storage. Self-consumption is a fixed fraction.
+- **Commercial / industrial sites** — sector filter is hardcoded to Residential.
+- **Non-US locations** — the geocoder returns only US matches.
+- **Real-time weather** — production is based on PVWatts TMY (typical meteorological year), not live forecasts.
+- **Live submission to installers** — no integration with any sales channel.
+
+---
+
+## 4 · Critical pieces
+
+### The orchestrator: `solar_fetch.quote_from_location()`
+The single entry point that ties every data source to the economics model. Any change to the pipeline touches this function.
+
+### The warehouse: `solar_warehouse.py` + `solar.duckdb`
+Five `raw_*` staging tables with full JSON response history. Two tables you'll actually query (`raw_quote`, `raw_eia`); three audit tables you won't (`raw_pvwatts`, `raw_urdb`, `raw_geocode`). See [`docs/WAREHOUSE.md`](docs/WAREHOUSE.md).
+
+### The rate staleness guard: `solar_urdb.get_rate()` + bundled TOU
+URDB has PG&E data from 2014 ($0.15/kWh) but the real rate is $0.38+. The staleness detector catches this and swaps in a bundled current TOU schedule. Without this fix every CA quote scored "marginal" instead of "excellent" — with it, scores match reality.
+
+### The rehydrator: `solar_warehouse.quote_from_dict()`
+Turns a cached JSON row back into a full `QuoteResult` object tree. This is what makes the OLTP cache hit work without re-running any pipeline code.
+
+### The economics engine: `solar_economics.score_site()`
+45-field `SiteResult` dataclass with every parameter overridable via `Assumptions`. 39 unit tests pin down the math.
+
+### The report: `solar_viz.py`
+Plotly-based single-file HTML report. Hover tooltips on every metric explain what it means. Provenance section shows exactly which API each number came from.
+
+---
+
+## Getting Started
 
 ```bash
+# Clone and install
 git clone https://github.com/scottn66/solar-energy-analysis.git
 cd solar-energy-analysis
-```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
 
-### 3. Set up your API key
-
-We use a free NREL key to pull solar data. Get one in 30 seconds at [developer.nrel.gov/signup](https://developer.nrel.gov/signup/), then:
-
-```bash
+# Set up API keys (one-time)
 cp .env.example .env
-# Open .env and paste your key after NREL_API_KEY=
-```
+# Edit .env: add NREL_API_KEY (required) and EIA_API_KEY (optional, enables live rates)
 
-### 4. Verify everything works
+# Verify the full system works end-to-end
+python3 verify_system.py
+# Expected: 28/28 passed
 
-```bash
+# Run tests
 pytest test_solar_economics.py test_integration.py -v
-# Should show: 59 passed
+# Expected: 64 passed
 ```
 
-### 5. Try it out
+### Usage
 
 ```bash
-# Quick quote for any ZIP code
-python3 -m solar_fetch 94027
+# Get a quick quote on the terminal
+python3 -m solar_fetch 94061 --monthly-kwh 650
 
-# With your monthly electricity usage (more accurate sizing)
-python3 -m solar_fetch "San Jose, CA" --monthly-kwh 650
+# Generate an interactive HTML report
+python3 -m solar_fetch 94061 --monthly-kwh 650 --output report.html
 
-# Generate a full interactive HTML report
-python3 -m solar_fetch 94027 --monthly-kwh 650 --output report.html
+# Add a quote to the warehouse (the OLAP/ETL path)
+python3 solar_etl.py --location 94061 --monthly-kwh 650
 
-# Launch the web app
+# Check warehouse contents
+python3 solar_etl.py --status
+
+# Launch the web app (OLTP path, reads from warehouse first)
 uvicorn app:app --reload
-# Then open http://localhost:8000
+# Open http://localhost:8000
+
+# Query the warehouse from SQL (teammate workflow — no API keys needed)
+duckdb data/warehouse/solar.duckdb
+> SELECT location_query, viability_score, utility_name FROM raw_quote;
 ```
 
 ---
 
-## How It Works
+## Verification & CI
 
-When you enter an address, the system runs this pipeline automatically:
-
-```
-  "94027"
-     |
-     v
- +------------------+     +------------------+
- |  1. GEOCODE      |     |  2. SOLAR DATA   |
- |  ZIP -> lat/lon  |---->|  NREL PVWatts    |
- |  Census fallback |     |  8,195 kWh/yr    |
- +------------------+     +------------------+
-                                   |
-                    +--------------+--------------+
-                    |                             |
-             +------+-------+           +---------+--------+
-             | 3. RATE LOOK |           | 4. EXPORT POLICY |
-             |    UP        |           |   NEM 3.0 / 1:1  |
-             |  URDB / EIA  |           |   by state       |
-             +--------------+           +------------------+
-                    |                             |
-                    +-------------+---------------+
-                                  |
-                                  v
-                    +----------------------------+
-                    |  5. FINANCIAL ANALYSIS     |
-                    |  25-year cashflow model    |
-                    |  LCOE, payback, NPV, IRR   |
-                    |  Viability score 0-100     |
-                    +----------------------------+
-                                  |
-                    +-------------+---------------+
-                    |                             |
-             +------+-------+           +---------+-------+
-             | HTML REPORT  |           |  WEB APP        |
-             | 8 interactive|           |  FastAPI + HTMX |
-             | Plotly charts|           |  localhost:8000  |
-             +--------------+           +-----------------+
-```
+- **`python3 verify_system.py`** — 28 end-to-end checks across 8 phases (schema, ETL, cache, numerical equivalence, multi-location, error handling, test suite).
+- **`pytest`** — 64 automated tests (39 economics + 25 integration & warehouse). CI runs on every push via `.github/workflows/test.yml`.
+- **Last verified:** 28/28 verification checks + 64/64 tests passing.
 
 ---
 
-## OLTP vs OLAP — the two sides of this project
-
-The project deliberately splits responsibilities into two layers, following the classic OLTP/OLAP pattern:
+## Project structure
 
 ```
-   OLTP (per-request, fast)         OLAP (batch / analytical)
-   ─────────────────────────        ────────────────────────────
-   app.py endpoint                  Sayli / Shraddha
-   "Score this one address"         "Score trends across all quotes"
-            │                                │
-            ▼                                ▼
-        ┌──────────────────────────────────────────┐
-        │  data/warehouse/solar.duckdb             │
-        │  (shared source of truth: raw_* tables)  │
-        └──────────────────────────────────────────┘
-                          ▲
-                          │ (only on cache miss)
-                          │
-                  solar_etl.py → live APIs
-                  (ONLY place that needs
-                   NREL + EIA API keys)
-```
-
-**What this buys you:**
-- **OLTP (`app.py`)** — when a user submits a location, the app first checks the warehouse. If there's a quote for that location from the last 7 days, it's returned in ~50ms with no API calls. This is the transactional path: one user, one result, fast.
-- **OLAP (`data/warehouse/solar.duckdb`)** — teammates run SQL directly against the DuckDB file for EDA. They don't need API keys and don't compete with the app for rate-limit budget. This is the analytical path: many rows, many aggregations, flexible.
-- **ETL (`solar_etl.py`)** — the single chokepoint that actually talks to the APIs. It runs on cache miss (from the app) or on demand (from the CLI). Its job is to fetch, parse, and persist.
-
-This means **only one person needs the API keys** (whoever runs the ETL). Everyone else just queries the `.duckdb` file.
-
-See [`docs/WAREHOUSE.md`](docs/WAREHOUSE.md) for the table schemas and example queries.
-
----
-
-## Project Structure
-
-```
-What you'll work with most:
-  solar_fetch.py           The main entry point - ties everything together
-  solar_economics.py       The financial math (score_site function)
-  solar_viz.py             Chart and report generation
-  app.py                   Web interface
+Working files:
+  solar_fetch.py            Orchestrator — ties everything together
+  solar_economics.py        Financial math (score_site)
+  solar_viz.py              Chart generation & HTML report
+  app.py                    FastAPI OLTP layer with cache-first reads
 
 Data pipeline modules:
-  solar_geocode.py         Turns addresses into coordinates
-  solar_pvwatts.py         Gets solar production estimates from NREL
-  solar_urdb.py            Looks up your utility's electricity rate
-  solar_nem.py             Determines solar export compensation by state
-  solar_eia.py             Live electricity rate lookup (EIA API)
+  solar_geocode.py          Address → coordinates
+  solar_pvwatts.py          NREL solar production
+  solar_urdb.py             Utility rate lookup + staleness guard
+  solar_eia.py              EIA live state rates
+  solar_nem.py              NEM export policy
 
-Warehouse layer (OLTP/OLAP separation):
-  solar_warehouse.py       DuckDB connection + schema (reusable)
-  solar_etl.py             Writes every fetch into the warehouse
-                           → teammates query the DB with no API keys
+Warehouse layer (OLAP):
+  solar_warehouse.py        DuckDB schema + latest_quote + quote_from_dict
+  solar_etl.py              Run pipeline + persist to warehouse
+  data/warehouse/solar.duckdb   (the file itself — gitignored)
 
-Exploration notebooks (run in order):
-  notebooks/01_nrel_api.ipynb       NREL PVWatts API deep-dive
-  notebooks/02_nasa_api.ipynb       NASA weather data exploration
-  notebooks/03_data_loading.ipynb   Load Berkeley Lab installation dataset
-  notebooks/04_eda_peninsula.ipynb  Bay Area solar trends analysis
-  notebooks/05_data_dictionary.ipynb  What each column means
-  notebooks/06_pipeline.ipynb       Full data integration pipeline
+Verification & tests:
+  verify_system.py          End-to-end smoke test (28 assertions)
+  test_solar_economics.py   39 unit tests
+  test_integration.py       25 integration tests (warehouse + HTTP-mocked pipeline)
+
+Exploration:
+  notebooks/                Jupyter EDA notebooks
+  sample_site.csv           Single-row sample input for testing
 
 Reference data:
-  data/uszips.csv                   US ZIP code coordinates (41K entries)
-  data/eia_state_rates_2025.csv     Electricity prices by state
-  data/nem3_acc_2025.csv            CA NEM 3.0 export rate schedule
-
-Tests:
-  test_solar_economics.py           39 tests for the financial engine
-  test_integration.py               20 tests for the full pipeline
+  data/uszips.csv           US ZIP code coordinates
+  data/eia_state_rates_2025.csv   Bundled state electricity prices
+  data/nem3_acc_2025.csv          CA NEM 3.0 export rate schedule
+  data/utility_tou_schedules.csv  Bundled TOU rates for CA IOUs
 ```
-
----
-
-## What the Report Shows
-
-The generated HTML report includes **8 interactive charts**:
-
-| Chart | What it tells you |
-|-------|------------------|
-| **Viability Gauge** | Overall 0-100 score with color-coded bands |
-| **KPI Cards** | Net cost, LCOE, payback, NPV, IRR, CO2 at a glance |
-| **Economics Waterfall** | How cost flows from gross to net benefit |
-| **Cumulative Cashflow** | When you break even (red zone vs green zone) |
-| **LCOE vs Retail Rate** | Is solar cheaper than the grid? By how much? |
-| **Sensitivity Tornado** | Which assumptions matter most to the outcome |
-| **Monthly Production** | Seasonal solar output pattern |
-| **Peer Comparison** | How this site stacks up against reference data |
-
-Plus a **TOU rate overlay** (when utility has time-of-use pricing) and a full **provenance section** showing exactly where every number came from.
-
----
-
-## Key Assumptions
-
-These are the defaults baked into the financial model. All are overridable.
-
-| What | Default | Why |
-|------|---------|-----|
-| System lifetime | 25 years | Standard solar panel warranty period |
-| Panel degradation | 0.5% per year | Panels slowly lose efficiency over time |
-| Federal tax credit (ITC) | 30% | Current US incentive through 2032 |
-| Electricity price increase | 2.5% per year | Historical average rate of grid price growth |
-| Self-consumption | 40% | How much solar you use directly vs export to grid |
-| Export credit | 75% of retail | What the utility pays you for excess power (varies by state) |
-| O&M cost | $20/kW per year | Cleaning, monitoring, inverter replacement fund |
-| Install cost | $3.50/W | National average; overridden by local data when available |
-
----
-
-## Data Sources
-
-| Source | What it provides | How fresh |
-|--------|-----------------|-----------|
-| [NREL PVWatts v8](https://developer.nrel.gov/docs/solar/pvwatts/v8/) | Solar production estimates for any location | Live API (cached 30 days) |
-| [OpenEI URDB](https://openei.org/wiki/Utility_Rate_Database) | Utility electricity rates (flat, tiered, TOU) | Live API (cached 7 days) |
-| [NASA POWER](https://power.larc.nasa.gov/) | Hourly solar radiation and weather | Live API |
-| [Berkeley Lab TTS](https://emp.lbl.gov/tracking-the-sun) | Real solar installation records (2M+ systems) | Downloaded dataset |
-| [EIA](https://www.eia.gov/electricity/monthly/) | State average electricity prices | Bundled CSV (update annually) |
-| [US Census Geocoder](https://geocoding.geo.census.gov/) | Address to lat/lon conversion | Live API (cached 30 days) |
-
----
-
-## For Developers: Branching & Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full details. Quick version:
-
-1. Pull latest `main`
-2. Create a branch: `git checkout -b feature/your-task`
-3. Make changes, commit with clear messages
-4. Push and open a Pull Request
-5. Get one teammate's review before merging
 
 ---
 
 ## Deep Dives
 
-For more detail, see the docs:
-
-- **[Architecture Overview](docs/ARCHITECTURE.md)** — module map, where to find things, caching strategy
-- **[Assumptions Reference](docs/ASSUMPTIONS.md)** — every number in the model with source, rationale, and how to override
-- **[Warehouse Reference](docs/WAREHOUSE.md)** — DuckDB schema, query examples, how teammates query without API keys
-- **[Test Suite Reference](docs/TESTS.md)** — all 59 tests explained, what each one protects against, how to run them
-- **[Contributing Guide](CONTRIBUTING.md)** — branching strategy, PR workflow, commit conventions
+- **[`docs/WAREHOUSE.md`](docs/WAREHOUSE.md)** — warehouse schema, example queries, teammate workflow
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — module map, where-to-find-things, caching
+- **[`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md)** — every financial parameter with source and rationale
+- **[`docs/TESTS.md`](docs/TESTS.md)** — test suite reference (all 64 tests catalogued)
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — branching strategy and PR workflow
 
 ---
 
 ## Team
 
-| Member | Focus Area |
-|--------|-----------|
-| Scott | Pipeline architecture, economics engine, visualization |
-| Sayli | *(unclaimed — see suggested areas below)* |
-| Shraddha | *(unclaimed — see suggested areas below)* |
+| Member | Primary focus |
+|---|---|
+| Scott | Pipeline architecture, warehouse, economics engine |
+| Sayli | *(unclaimed — see "Good areas to pick up" below)* |
+| Shraddha | *(unclaimed — see "Good areas to pick up" below)* |
 
 **Good areas to pick up:**
-- **EDA & storytelling** — the notebooks (04_eda_peninsula) have charts but need narrative and insights written up
-- **Data quality** — validate the pipeline against known solar installations; are the numbers realistic?
-- **New locations** — run the tool on different states/utilities and document how results compare
-- **Presentation** — turn the report outputs into slides for the final project presentation
+- **EDA & storytelling** — query the warehouse across states/utilities and write up the patterns you find
+- **Data quality** — validate scoring against known real installations; flag implausible outputs
+- **New locations** — run `solar_etl.py` on a diverse batch of addresses and compare the results
+- **Presentation** — distill the HTML report into slides for the final project

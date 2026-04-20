@@ -1,6 +1,6 @@
 # Test Suite Reference
 
-**Last verified:** 62/62 passing in ~6 seconds
+**Last verified:** 64/64 passing in ~6 seconds (plus 28/28 `verify_system.py` end-to-end checks)
 
 This document describes every test in the project and what it protects against. Tests are your safety net — if you change code and a test breaks, you've probably introduced a bug.
 
@@ -27,6 +27,29 @@ pytest -v -s
 ```
 
 **CI runs all tests automatically** on every push and PR via `.github/workflows/test.yml`.
+
+## End-to-end verification — `verify_system.py`
+
+Beyond the unit/integration tests (which use mocked HTTP), there's a **full system verification** script that runs the real pipeline against live APIs and makes 28 explicit assertions across 8 phases:
+
+| Phase | What it verifies |
+|---|---|
+| 0 | Warehouse resets cleanly |
+| 1 | Schema is staging-only (5 `raw_*` tables, no mart tables) |
+| 2 | `etl_quote()` writes to `raw_quote`, `raw_geocode`, `raw_pvwatts`, `raw_urdb` |
+| 3 | Teammate workflow: query warehouse via subprocess with zero API keys in env |
+| 4 | Cache-hit latency is consistently <100ms |
+| 5 | Rehydrated quote matches original field-for-field (score, NPV, LCOE, payback, production array, rate source, export policy) |
+| 6 | Multiple locations accumulate in the warehouse correctly |
+| 7 | Malformed input raises `GeocodeError` cleanly (no crash, no partial rows) |
+| 8 | Full pytest suite still passes |
+
+Run it:
+```bash
+python3 verify_system.py
+```
+
+Expected output: `28 passed`, exit code 0.
 
 ---
 
@@ -109,9 +132,9 @@ A deliberately terrible site (cloudy WA, west-facing, 5° tilt at 47° latitude,
 
 ---
 
-## File 2: `test_integration.py` — 20 tests
+## File 2: `test_integration.py` — 25 tests
 
-Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. Runs in ~5 seconds.
+Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. Runs in ~6 seconds.
 
 ### Class: `TestGeocode` — Address resolution (4 tests)
 
@@ -163,12 +186,14 @@ Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. 
 | `test_healthz` | GET /healthz → `{"ok": true}` |
 | `test_quote_endpoint_with_bad_location` | POST garbage → friendly HTML error card, not 500 crash |
 
-### Class: `TestWarehouse` — DuckDB warehouse layer (3 tests)
+### Class: `TestWarehouse` — DuckDB warehouse layer (5 tests)
 
 | Test | What it checks |
 |------|---------------|
-| `test_schema_creation` | `ensure_schema()` creates all 10 tables and is idempotent |
+| `test_schema_creation` | `ensure_schema()` creates the 5 `raw_*` staging tables and no mart tables; idempotent |
 | `test_etl_writes_staging_rows` | `etl_quote()` inserts rows into `raw_geocode`, `raw_pvwatts`, `raw_urdb`, `raw_quote` |
+| `test_quote_from_dict_roundtrip` | `quote_from_dict()` rebuilds a full `QuoteResult` from stored JSON |
+| `test_app_uses_warehouse_cache` | Second `/api/quote` for same location hits the warehouse — proves the OLTP/OLAP wiring |
 | `test_staging_row_is_queryable` | Inserted rows can be queried back with expected values |
 
 ---

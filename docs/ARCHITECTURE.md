@@ -70,6 +70,9 @@ The **warehouse layer** is where teammates hook in for EDA/analytics — see
 | Run the pipeline from CLI             | `python3 -m solar_fetch ...`  |
 | Persist quote to the warehouse        | `solar_etl.etl_quote()` or `python3 solar_etl.py` |
 | Query the warehouse (no API keys)     | `solar_warehouse.get_conn()` or `duckdb data/warehouse/solar.duckdb` |
+| Check if a quote is cached            | `solar_warehouse.latest_quote(location, max_age_days=7)` |
+| Rebuild a QuoteResult from cached JSON | `solar_warehouse.quote_from_dict(d)` |
+| Run end-to-end system verification    | `python3 verify_system.py`    |
 
 ## Data files
 
@@ -97,9 +100,13 @@ rm -rf ~/.solar_cache/
 ## Test structure
 
 - `test_solar_economics.py` — 39 unit tests for the financial engine (no API calls)
-- `test_integration.py` — 20+ tests for the full pipeline + warehouse (all HTTP mocked)
+- `test_integration.py` — 25 integration tests for the pipeline + warehouse (all HTTP mocked)
+- `verify_system.py` — 28 end-to-end checks that hit real APIs; run manually
+
+See [`docs/TESTS.md`](TESTS.md) for the complete test catalogue.
 
 Run all tests:
 ```bash
-pytest test_solar_economics.py test_integration.py -v
+pytest test_solar_economics.py test_integration.py -v     # 64 passed
+python3 verify_system.py                                  # 28 passed
 ```
