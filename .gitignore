@@ -38,3 +38,12 @@ Thumbs.db
 *.sqlite
 site_reports/
 solar_report.html
+node_modules
+package*.json
+
+# DuckDB warehouse — built by ETL, can be regenerated.
+# If you want teammates to pull a pre-built snapshot, comment these lines out
+# and commit the .duckdb file directly.
+data/warehouse/
+*.duckdb
+*.duckdb.wal

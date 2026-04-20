@@ -113,6 +113,12 @@ Data pipeline modules:
   solar_pvwatts.py         Gets solar production estimates from NREL
   solar_urdb.py            Looks up your utility's electricity rate
   solar_nem.py             Determines solar export compensation by state
+  solar_eia.py             Live electricity rate lookup (EIA API)
+
+Warehouse layer (OLTP/OLAP separation):
+  solar_warehouse.py       DuckDB connection + schema (reusable)
+  solar_etl.py             Writes every fetch into the warehouse
+                           → teammates query the DB with no API keys
 
 Exploration notebooks (run in order):
   notebooks/01_nrel_api.ipynb       NREL PVWatts API deep-dive
@@ -201,6 +207,7 @@ For more detail, see the docs:
 
 - **[Architecture Overview](docs/ARCHITECTURE.md)** — module map, where to find things, caching strategy
 - **[Assumptions Reference](docs/ASSUMPTIONS.md)** — every number in the model with source, rationale, and how to override
+- **[Warehouse Reference](docs/WAREHOUSE.md)** — DuckDB schema, query examples, how teammates query without API keys
 - **[Test Suite Reference](docs/TESTS.md)** — all 59 tests explained, what each one protects against, how to run them
 - **[Contributing Guide](CONTRIBUTING.md)** — branching strategy, PR workflow, commit conventions
 

@@ -368,3 +368,105 @@ class TestFastAPIApp:
         resp = client.post("/api/quote", data={"location": "xyzzynotreal"})
         assert resp.status_code == 200  # HTMX gets HTML, not 500
         assert "error-card" in resp.text or "not found" in resp.text.lower() or "error" in resp.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 7. Warehouse smoke tests (Phase 1)
+# ---------------------------------------------------------------------------
+
+class TestWarehouse:
+    """Tests for solar_warehouse.py + solar_etl.py persistence layer."""
+
+    def test_schema_creation(self, tmp_path):
+        """ensure_schema() should create all 10 tables idempotently."""
+        from solar_warehouse import get_conn, ensure_schema, table_counts
+
+        db = tmp_path / "test.duckdb"
+        conn = get_conn(db)
+        ensure_schema(conn)
+        # Calling twice should not error
+        ensure_schema(conn)
+
+        counts = table_counts(conn)
+        expected = {
+            "raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote",
+            "dim_location", "dim_utility", "dim_tariff",
+            "fact_quote", "fact_rate_history",
+        }
+        assert expected.issubset(set(counts.keys()))
+        # All tables should start empty
+        for name in expected:
+            assert counts[name] == 0
+
+        conn.close()
+
+    def test_etl_writes_staging_rows(self, tmp_path, mock_pvwatts_response,
+                                      mock_urdb_response):
+        """etl_quote() should insert rows into raw_* tables."""
+        from solar_etl import etl_quote, etl_status
+
+        db = tmp_path / "test.duckdb"
+
+        # Mock all external HTTP so the test doesn't hit real APIs
+        def mock_session_get(url, **kwargs):
+            from unittest.mock import MagicMock
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "pvwatts" in url:
+                resp.json.return_value = mock_pvwatts_response
+            elif "openei.org" in url:
+                resp.json.return_value = mock_urdb_response
+            elif "geocoding.geo.census.gov" in url:
+                resp.json.return_value = {"result": {"addressMatches": []}}
+            elif "nominatim" in url:
+                resp.json.return_value = []
+            else:
+                resp.json.return_value = {"outputs": {"residential": 0.32}}
+            return resp
+
+        with patch("solar_pvwatts._session") as mock_pv, \
+             patch("solar_urdb._session") as mock_urdb:
+            mock_pv.get.side_effect = mock_session_get
+            mock_urdb.get.side_effect = mock_session_get
+
+            quote = etl_quote("95112", db_path=db)
+
+        assert quote is not None
+        counts = etl_status(db_path=db)
+        # We should have at least one row in each key staging table
+        assert counts["raw_geocode"] >= 1
+        assert counts["raw_pvwatts"] >= 1
+        assert counts["raw_urdb"] >= 1
+        assert counts["raw_quote"] >= 1
+
+    def test_staging_row_is_queryable(self, tmp_path):
+        """After writing a quote, SELECT queries should return sensible data."""
+        from solar_warehouse import get_conn, ensure_schema
+
+        db = tmp_path / "test.duckdb"
+        conn = get_conn(db)
+        ensure_schema(conn)
+
+        # Manually insert a row to avoid the API dependency
+        from datetime import datetime, timezone
+        conn.execute("""
+            INSERT INTO raw_quote
+                (fetched_at, location_query, lat, lon, state, zip_code,
+                 system_kw, system_sizing_method,
+                 viability_score, viability_label, payback_years, npv_25yr,
+                 irr, lcoe, co2_avoided_tons,
+                 utility_name, rate_name, rate_source, electricity_rate_used,
+                 export_policy, export_rate,
+                 confidence_level, confidence_reasons, full_result_json)
+            VALUES (?, 'test_loc', 37.5, -122.0, 'CA', '94061', 5.0, 'manual',
+                    85.0, 'Good', 7.5, 10000.0, 0.14, 0.08, 3.0,
+                    'Test Utility', 'Test Rate', 'urdb_full', 0.32,
+                    'NEM 3.0', 0.05,
+                    'high', '[]', '{}')
+        """, [datetime.now(timezone.utc)])
+
+        result = conn.execute(
+            "SELECT viability_score, state FROM raw_quote WHERE location_query = 'test_loc'"
+        ).fetchone()
+        assert result == (85.0, "CA")
+        conn.close()

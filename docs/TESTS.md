@@ -1,6 +1,6 @@
 # Test Suite Reference
 
-**Last verified:** 59/59 passing in ~6 seconds
+**Last verified:** 62/62 passing in ~6 seconds
 
 This document describes every test in the project and what it protects against. Tests are your safety net — if you change code and a test breaks, you've probably introduced a bug.
 
@@ -162,6 +162,14 @@ Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. 
 | `test_landing_page` | GET / → 200, contains "Is solar worth it" |
 | `test_healthz` | GET /healthz → `{"ok": true}` |
 | `test_quote_endpoint_with_bad_location` | POST garbage → friendly HTML error card, not 500 crash |
+
+### Class: `TestWarehouse` — DuckDB warehouse layer (3 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_schema_creation` | `ensure_schema()` creates all 10 tables and is idempotent |
+| `test_etl_writes_staging_rows` | `etl_quote()` inserts rows into `raw_geocode`, `raw_pvwatts`, `raw_urdb`, `raw_quote` |
+| `test_staging_row_is_queryable` | Inserted rows can be queried back with expected values |
 
 ---
 

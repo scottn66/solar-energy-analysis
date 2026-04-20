@@ -6,7 +6,7 @@ This document explains how the modules connect and where to look when something 
 
 ```
 User Input ("94061" or "San Jose, CA")
-        |
+        │
         v
 ┌─────────────────────────────────────────────────────┐
 │  solar_fetch.py  (ORCHESTRATOR)                     │
@@ -24,14 +24,20 @@ User Input ("94061" or "San Jose, CA")
                        v
               solar_economics.py
               score_site() → SiteResult
-              (25-year financial model)
                        │
-              ┌────────┴────────┐
-              v                 v
-        solar_viz.py        app.py
-        HTML report         FastAPI web UI
-        (Plotly charts)     (HTMX frontend)
+    ┌──────────────────┼──────────────────┐
+    v                  v                  v
+solar_viz.py       app.py          solar_etl.py
+HTML report       FastAPI web UI  Persists to DuckDB
+(Plotly charts)   (HTMX frontend) warehouse (data/warehouse/solar.duckdb)
+                                         │
+                                         v
+                                  Teammates query DB
+                                  directly (no API keys)
 ```
+
+The **warehouse layer** is where teammates hook in for EDA/analytics — see
+`docs/WAREHOUSE.md` for the full schema.
 
 ## Where to find things
 
@@ -47,6 +53,8 @@ User Input ("94061" or "San Jose, CA")
 | Add a new data source                 | Start in `solar_fetch.py`     |
 | Run the pipeline from code            | `solar_fetch.quote_from_location()` |
 | Run the pipeline from CLI             | `python3 -m solar_fetch ...`  |
+| Persist quote to the warehouse        | `solar_etl.etl_quote()` or `python3 solar_etl.py` |
+| Query the warehouse (no API keys)     | `solar_warehouse.get_conn()` or `duckdb data/warehouse/solar.duckdb` |
 
 ## Data files
 
