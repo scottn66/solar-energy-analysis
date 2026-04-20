@@ -25,6 +25,9 @@ from solar_geocode import GeocodeError
 from solar_pvwatts import PVWattsError
 from solar_urdb import URDBError
 from solar_viz import generate_report_html, PALETTE
+from solar_warehouse import latest_quote, quote_from_dict
+from solar_etl import etl_quote
+import json
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -339,14 +342,30 @@ async def api_quote(
 ):
     """
     Handle a quote request. Returns an HTML fragment that HTMX swaps into #result.
+
+    OLTP path: first check the DuckDB warehouse (OLAP storage) for a recent
+    quote at this location. If one exists and is <=7 days old, return it
+    without any live API calls. Otherwise run the full pipeline via
+    etl_quote(), which persists the new quote to the warehouse so future
+    requests (including teammates' EDA) can see it.
     """
     try:
-        quote = quote_from_location(
-            location=location,
-            monthly_kwh=monthly_kwh if monthly_kwh else None,
-            system_kw=system_kw if system_kw else None,
-            detailed=True,
-        )
+        # --- OLAP cache check ---
+        cached = latest_quote(location, max_age_days=7)
+        if cached:
+            logger.info(
+                "OLAP cache hit for '%s' (fetched %s)",
+                location, cached["fetched_at"],
+            )
+            quote = quote_from_dict(json.loads(cached["full_result_json"]))
+        else:
+            # --- Cache miss: run live pipeline, persist to warehouse ---
+            logger.info("OLAP cache miss for '%s'; running live pipeline", location)
+            quote = etl_quote(
+                location=location,
+                monthly_kwh=monthly_kwh if monthly_kwh else None,
+                system_kw=system_kw if system_kw else None,
+            )
 
         # Build row for report
         row = quote.pvwatts_result.to_dict()

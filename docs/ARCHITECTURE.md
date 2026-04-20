@@ -9,35 +9,50 @@ User Input ("94061" or "San Jose, CA")
         │
         v
 ┌─────────────────────────────────────────────────────┐
-│  solar_fetch.py  (ORCHESTRATOR)                     │
-│  quote_from_location() ties everything together     │
-└───────┬──────────┬──────────┬──────────┬────────────┘
-        │          │          │          │
-        v          v          v          v
-  solar_geocode  solar_pvwatts  solar_urdb  solar_nem
-  .py            .py            .py         .py
-  ZIP/Census/    NREL PVWatts   URDB rate   NEM export
-  Nominatim      production     lookup      policy
-        │          │          │          │
-        └──────────┴──────────┴──────────┘
-                       │
-                       v
-              solar_economics.py
-              score_site() → SiteResult
-                       │
-    ┌──────────────────┼──────────────────┐
-    v                  v                  v
-solar_viz.py       app.py          solar_etl.py
-HTML report       FastAPI web UI  Persists to DuckDB
-(Plotly charts)   (HTMX frontend) warehouse (data/warehouse/solar.duckdb)
-                                         │
-                                         v
-                                  Teammates query DB
-                                  directly (no API keys)
+│  app.py  (OLTP — FastAPI / HTMX web UI)             │
+│  /api/quote endpoint                                │
+└───────┬─────────────────────────────────────────────┘
+        │
+        │   1. Check OLAP warehouse first (solar_warehouse.latest_quote)
+        │
+        ├── hit  (quote fresh <=7 days): rehydrate via quote_from_dict()
+        │
+        └── miss: call solar_etl.etl_quote()
+                        │
+                        v
+            ┌──────────────────────────────────┐
+            │  solar_fetch.quote_from_location │
+            │  (the live pipeline orchestrator)│
+            └──┬────────┬────────┬─────────────┘
+               │        │        │
+               v        v        v
+         solar_geocode  solar_pvwatts  solar_urdb  solar_nem
+         ZIP/Census     NREL PVWatts   URDB + EIA  NEM policy
+               │        │        │        │
+               └────────┴────────┴────────┘
+                              │
+                              v
+                      solar_economics.score_site()
+                              │
+                              v
+                  solar_etl stages to warehouse:
+                  raw_quote, raw_pvwatts, raw_urdb,
+                  raw_eia, raw_geocode
+                              │
+                              v
+              ┌───────────────┴───────────────┐
+              │ data/warehouse/solar.duckdb   │
+              │ (OLAP — shared analytical DB) │
+              └───────────────┬───────────────┘
+                              │
+                              v
+                   Teammates query directly
+                   (no API keys needed)
+                   → solar_viz renders HTML reports
 ```
 
 The **warehouse layer** is where teammates hook in for EDA/analytics — see
-`docs/WAREHOUSE.md` for the full schema.
+`docs/WAREHOUSE.md` for the full schema and example queries.
 
 ## Where to find things
 
@@ -82,7 +97,7 @@ rm -rf ~/.solar_cache/
 ## Test structure
 
 - `test_solar_economics.py` — 39 unit tests for the financial engine (no API calls)
-- `test_integration.py` — 20 tests for the full pipeline (all HTTP mocked)
+- `test_integration.py` — 20+ tests for the full pipeline + warehouse (all HTTP mocked)
 
 Run all tests:
 ```bash

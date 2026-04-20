@@ -245,43 +245,6 @@ def etl_status(db_path: Optional[Path] = None) -> dict[str, int]:
         conn.close()
 
 
-def build_marts(db_path: Optional[Path] = None) -> dict[str, int]:
-    """
-    Rebuild the dim_* and fact_* mart tables from staging.
-
-    Executes sql/build_marts.sql.  Safe to re-run — each section
-    DELETEs first, so marts always reflect the latest staging data.
-
-    Returns the row counts for the rebuilt mart tables.
-    """
-    sql_path = Path(__file__).resolve().parent / "sql" / "build_marts.sql"
-    if not sql_path.exists():
-        raise FileNotFoundError(f"Mart SQL not found: {sql_path}")
-
-    conn = get_conn(db_path)
-    ensure_schema(conn)
-    try:
-        sql_text = sql_path.read_text()
-        # DuckDB executes multi-statement scripts via the `execute` method.
-        # Strip the one SQLite-specific line that DuckDB doesn't understand.
-        sql_text = "\n".join(
-            line for line in sql_text.splitlines()
-            if "sqlite_sequence" not in line and "ON CONFLICT DO NOTHING" not in line
-        )
-        conn.execute(sql_text)
-        logger.info("Mart tables rebuilt from staging")
-
-        mart_tables = ["dim_location", "dim_utility", "dim_tariff",
-                       "fact_quote", "fact_rate_history"]
-        counts = {
-            t: int(conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0])
-            for t in mart_tables
-        }
-        return counts
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -304,8 +267,6 @@ def main():
                         help="Installation date (YYYY-MM-DD)")
     parser.add_argument("--status", action="store_true",
                         help="Print warehouse row counts and exit")
-    parser.add_argument("--build-marts", action="store_true",
-                        help="Rebuild dim_* and fact_* tables from staging")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -321,16 +282,8 @@ def main():
             print(f"  {name:20s}  {count:>8} rows")
         return
 
-    if args.build_marts:
-        print("Rebuilding mart tables from staging...")
-        mart_counts = build_marts()
-        print("Mart tables:")
-        for name, count in sorted(mart_counts.items()):
-            print(f"  {name:20s}  {count:>8} rows")
-        return
-
     if not args.location:
-        parser.error("--location is required (or use --status / --build-marts)")
+        parser.error("--location is required (or use --status)")
 
     install_dt = None
     if args.install_date:

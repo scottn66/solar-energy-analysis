@@ -99,6 +99,40 @@ When you enter an address, the system runs this pipeline automatically:
 
 ---
 
+## OLTP vs OLAP — the two sides of this project
+
+The project deliberately splits responsibilities into two layers, following the classic OLTP/OLAP pattern:
+
+```
+   OLTP (per-request, fast)         OLAP (batch / analytical)
+   ─────────────────────────        ────────────────────────────
+   app.py endpoint                  Sayli / Shraddha
+   "Score this one address"         "Score trends across all quotes"
+            │                                │
+            ▼                                ▼
+        ┌──────────────────────────────────────────┐
+        │  data/warehouse/solar.duckdb             │
+        │  (shared source of truth: raw_* tables)  │
+        └──────────────────────────────────────────┘
+                          ▲
+                          │ (only on cache miss)
+                          │
+                  solar_etl.py → live APIs
+                  (ONLY place that needs
+                   NREL + EIA API keys)
+```
+
+**What this buys you:**
+- **OLTP (`app.py`)** — when a user submits a location, the app first checks the warehouse. If there's a quote for that location from the last 7 days, it's returned in ~50ms with no API calls. This is the transactional path: one user, one result, fast.
+- **OLAP (`data/warehouse/solar.duckdb`)** — teammates run SQL directly against the DuckDB file for EDA. They don't need API keys and don't compete with the app for rate-limit budget. This is the analytical path: many rows, many aggregations, flexible.
+- **ETL (`solar_etl.py`)** — the single chokepoint that actually talks to the APIs. It runs on cache miss (from the app) or on demand (from the CLI). Its job is to fetch, parse, and persist.
+
+This means **only one person needs the API keys** (whoever runs the ETL). Everyone else just queries the `.duckdb` file.
+
+See [`docs/WAREHOUSE.md`](docs/WAREHOUSE.md) for the table schemas and example queries.
+
+---
+
 ## Project Structure
 
 ```

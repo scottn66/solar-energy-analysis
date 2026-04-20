@@ -378,7 +378,7 @@ class TestWarehouse:
     """Tests for solar_warehouse.py + solar_etl.py persistence layer."""
 
     def test_schema_creation(self, tmp_path):
-        """ensure_schema() should create all 10 tables idempotently."""
+        """ensure_schema() should create all 5 raw_* staging tables idempotently."""
         from solar_warehouse import get_conn, ensure_schema, table_counts
 
         db = tmp_path / "test.duckdb"
@@ -390,13 +390,14 @@ class TestWarehouse:
         counts = table_counts(conn)
         expected = {
             "raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote",
-            "dim_location", "dim_utility", "dim_tariff",
-            "fact_quote", "fact_rate_history",
         }
         assert expected.issubset(set(counts.keys()))
         # All tables should start empty
         for name in expected:
             assert counts[name] == 0
+        # Mart tables should NOT exist — the schema is staging-only
+        assert "dim_location" not in counts
+        assert "fact_quote" not in counts
 
         conn.close()
 
@@ -438,6 +439,171 @@ class TestWarehouse:
         assert counts["raw_pvwatts"] >= 1
         assert counts["raw_urdb"] >= 1
         assert counts["raw_quote"] >= 1
+
+    def test_quote_from_dict_roundtrip(self, tmp_path):
+        """quote_from_dict() should rebuild a QuoteResult from its own to_dict()."""
+        from solar_warehouse import quote_from_dict
+        from solar_fetch import QuoteResult
+
+        # Build a minimal valid dict shape (simulating what's stored in full_result_json)
+        d = {
+            "site": {
+                "site_id": "test", "state": "CA", "address_label": "Test, CA",
+                "specific_yield": 1600.0, "capacity_factor": 18.0,
+                "resource_score": 0.89,
+                "gross_cost": 17500.0, "net_cost": 12250.0, "lifetime_om": 2500.0,
+                "lcoe": 0.08, "simple_payback_years": 7.5, "npv": 5000.0,
+                "irr": 0.12, "grid_parity_ratio": 0.25,
+                "annual_co2_avoided_tons": 3.0, "year_1_savings": 1200.0,
+                "lifetime_savings": 40000.0, "electricity_rate_used": 0.32,
+                "rate_source": "urdb_full", "year_production": [7500.0] * 25, "annual_savings": [1400.0] * 25,
+                "cumulative_savings": [1400.0 * i for i in range(1, 26)],
+                "cumulative_grid_cost": [2000.0 * i for i in range(1, 26)],
+                "cashflows": [-12250.0] + [1400.0] * 25,
+                "tilt_deviation": 0.0, "azimuth_deviation": 0.0, "site_fit_score": 1.0,
+                "policy_score": 0.9, "viability_score": 88.0,
+                "viability_label": "Excellent", "economics_score": 0.9,
+                "assumptions_used": {},
+            },
+            "geocode": {
+                "lat": 37.5, "lon": -122.0, "resolved_address": "Test, CA",
+                "state": "CA", "zip_code": "94061",
+                "source": "uszips", "confidence": "medium",
+            },
+            "pvwatts": {
+                "pvwatts_ac_annual_kwh": 8000.0, "pvwatts_solrad_annual": 5.8,
+                "pvwatts_capacity_factor": 18.0,
+                "pvwatts_ac_monthly": [650]*12, "pvwatts_poa_monthly": [180]*12,
+                "pvwatts_dc_monthly": [700]*12,
+                "pvwatts_station_distance_m": 2000.0,
+                "pvwatts_station_lat": 37.5, "pvwatts_station_lon": -122.0,
+                "pvwatts_version": "8.5.0",
+            },
+            "rate": {
+                "flat_rate": 0.32, "fixed_monthly_charge": 10.0,
+                "utility_name": "Test Utility", "rate_name": "Test Rate",
+                "rate_uri": "", "source": "urdb_full",
+                "effective_date": "2024-01-01",
+                "is_tou": False, "is_tiered": False,
+            },
+            "export": {
+                "avg_export_rate": 0.05, "policy_name": "NEM 3.0",
+                "explanation": "test", "state": "CA", "is_exact": False,
+            },
+            "meta": {
+                "system_kw_used": 5.0, "system_sizing_method": "default",
+                "confidence_level": "medium", "confidence_reasons": ["test"],
+            },
+        }
+
+        quote = quote_from_dict(d)
+        assert isinstance(quote, QuoteResult)
+        assert quote.site_result.viability_score == 88.0
+        assert quote.geocode_result.state == "CA"
+        assert quote.rate_result.flat_rate == 0.32
+        # hourly_rates is intentionally dropped (numpy array, not JSON-safe)
+        assert quote.rate_result.hourly_rates is None
+
+    def test_app_uses_warehouse_cache(self, tmp_path, monkeypatch):
+        """Second /api/quote call for the same location should be a cache hit.
+
+        This is the key OLTP/OLAP integration test: after one call populates
+        the warehouse, the second call should return without invoking
+        quote_from_location() or etl_quote().
+        """
+        from fastapi.testclient import TestClient
+        import solar_warehouse
+
+        # Point the warehouse at a temp DB so this test is isolated
+        monkeypatch.setattr(solar_warehouse, "DEFAULT_DB_PATH", tmp_path / "test.duckdb")
+
+        # Pre-populate the warehouse with a quote directly (no API calls)
+        from solar_warehouse import get_conn, ensure_schema
+        from datetime import datetime, timezone
+        import json as _json
+
+        conn = get_conn()
+        ensure_schema(conn)
+        quote_json = {
+            "site": {
+                "site_id": "cached", "state": "CA", "address_label": "94061",
+                "specific_yield": 1700.0, "capacity_factor": 19.0,
+                "resource_score": 0.95,
+                "gross_cost": 17500.0, "net_cost": 12250.0, "lifetime_om": 2500.0,
+                "lcoe": 0.075, "simple_payback_years": 7.2, "npv": 11000.0,
+                "irr": 0.14, "grid_parity_ratio": 0.19,
+                "annual_co2_avoided_tons": 3.0, "year_1_savings": 1400.0,
+                "lifetime_savings": 45000.0, "electricity_rate_used": 0.39,
+                "rate_source": "bundled_tou", "year_production": [7500.0] * 25, "annual_savings": [1400.0] * 25,
+                "cumulative_savings": [1400.0 * i for i in range(1, 26)],
+                "cumulative_grid_cost": [2000.0 * i for i in range(1, 26)],
+                "cashflows": [-12250.0] + [1400.0] * 25,
+                "tilt_deviation": 0.0, "azimuth_deviation": 0.0, "site_fit_score": 1.0,
+                "policy_score": 0.9, "viability_score": 89.0,
+                "viability_label": "Excellent", "economics_score": 0.95,
+                "assumptions_used": {"default_price_per_watt": 3.5},
+            },
+            "geocode": {
+                "lat": 37.46, "lon": -122.23, "resolved_address": "Redwood City, CA 94061",
+                "state": "CA", "zip_code": "94061",
+                "source": "uszips", "confidence": "medium",
+            },
+            "pvwatts": {
+                "pvwatts_ac_annual_kwh": 7500.0, "pvwatts_solrad_annual": 5.8,
+                "pvwatts_capacity_factor": 19.0,
+                "pvwatts_ac_monthly": [625]*12, "pvwatts_poa_monthly": [180]*12,
+                "pvwatts_dc_monthly": [700]*12,
+                "pvwatts_station_distance_m": 2000.0,
+                "pvwatts_station_lat": 37.46, "pvwatts_station_lon": -122.23,
+                "pvwatts_version": "8.5.0",
+            },
+            "rate": {
+                "flat_rate": 0.39, "fixed_monthly_charge": 10.5,
+                "utility_name": "PG&E", "rate_name": "E-TOU-C",
+                "rate_uri": "", "source": "bundled_tou",
+                "effective_date": "2024-01-01",
+                "is_tou": True, "is_tiered": False,
+            },
+            "export": {
+                "avg_export_rate": 0.055, "policy_name": "NEM 3.0 (CA)",
+                "explanation": "test", "state": "CA", "is_exact": False,
+            },
+            "meta": {
+                "system_kw_used": 4.5, "system_sizing_method": "bill_sized",
+                "confidence_level": "medium", "confidence_reasons": ["test"],
+            },
+        }
+        conn.execute("""
+            INSERT INTO raw_quote
+                (fetched_at, location_query, lat, lon, state, zip_code,
+                 system_kw, system_sizing_method,
+                 viability_score, viability_label, payback_years, npv_25yr,
+                 irr, lcoe, co2_avoided_tons,
+                 utility_name, rate_name, rate_source, electricity_rate_used,
+                 export_policy, export_rate,
+                 confidence_level, confidence_reasons, full_result_json)
+            VALUES (?, '94061', 37.46, -122.23, 'CA', '94061', 4.5, 'bill_sized',
+                    89.0, 'Excellent', 7.2, 11000.0, 0.14, 0.075, 3.0,
+                    'PG&E', 'E-TOU-C', 'bundled_tou', 0.39,
+                    'NEM 3.0 (CA)', 0.055, 'medium', '["test"]', ?)
+        """, [datetime.now(timezone.utc), _json.dumps(quote_json)])
+        conn.close()
+
+        # If etl_quote is called, the test fails — we should hit the cache
+        from unittest.mock import patch
+        from app import app
+        client = TestClient(app)
+
+        with patch("app.etl_quote") as mock_etl, \
+             patch("app.quote_from_location") as mock_live:
+            resp = client.post("/api/quote", data={"location": "94061"})
+
+            assert resp.status_code == 200
+            # Neither the ETL nor the live pipeline should be called
+            mock_etl.assert_not_called()
+            mock_live.assert_not_called()
+            # The response should contain Redwood City from our cached row
+            assert "Redwood City" in resp.text or "94061" in resp.text
 
     def test_staging_row_is_queryable(self, tmp_path):
         """After writing a quote, SELECT queries should return sensible data."""

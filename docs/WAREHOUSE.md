@@ -1,112 +1,96 @@
-# DuckDB Warehouse Reference
+# DuckDB Warehouse
 
 **Path:** `data/warehouse/solar.duckdb`
 
-This is the project's analytical warehouse. Every time `solar_etl.py` runs a quote, it writes all intermediate results here. Teammates query it directly instead of calling APIs.
+The warehouse is where every quote, rate lookup, and API response gets saved. It's the **OLAP** side of the project — built for analytical queries across many sites, not for serving individual live requests.
 
-## Why this exists
+## The 30-second explanation
 
-1. **No API keys needed for analysis** — Sayli and Shraddha work entirely from the `.duckdb` file
-2. **Historical tracking** — rate changes, policy shifts, quote outcomes preserved over time
-3. **Faster quotes** — DB reads are <10ms vs 2-5s for API calls (Phase 3)
-4. **Audit trail** — every number in a quote can be traced back to its source API response
+- **The web app (`app.py`) = OLTP.** Fast individual responses. One quote at a time.
+- **The warehouse (`solar.duckdb`) = OLAP.** Shared history. Many quotes, many rates, over time.
+- **The ETL (`solar_etl.py`) = the only thing that needs API keys.** It populates the warehouse.
 
-## Quick start
+When the app gets a request, it checks the warehouse first. If there's a recent quote for that location, it's served in ~50ms with no API calls. Otherwise the ETL runs, the result is persisted, and everyone benefits (including teammates doing EDA).
 
-```bash
-# Make sure it exists / is up to date
-python3 solar_etl.py --status
+## Two tables you'll actually use
 
-# Populate it with a quote (needs API keys)
-python3 solar_etl.py --location 94061 --monthly-kwh 650
+### `raw_quote` — one row per solar analysis
 
-# Query it (no keys needed)
-duckdb data/warehouse/solar.duckdb
-# or from Python:
-python3 -c "from solar_warehouse import get_conn; print(get_conn().execute('SELECT * FROM raw_quote').df())"
+Everything a teammate needs for stats across sites. Includes the viability score, payback, NPV, IRR, LCOE, CO2, utility name, rate source, confidence level, and the full JSON result.
+
+```sql
+SELECT location_query, state, viability_score, payback_years, utility_name
+FROM raw_quote
+ORDER BY fetched_at DESC
+LIMIT 10;
 ```
 
-## Schema
+### `raw_eia` — time series of state electricity rates
 
-### Staging tables (raw_*)
+Each EIA rate lookup is logged here. Use it to see how rates change month over month.
 
-Every API call captured verbatim, with the full JSON response preserved for auditability.
+```sql
+SELECT state, period, rate_dollars_per_kwh, fetched_at
+FROM raw_eia
+WHERE state = 'CA'
+ORDER BY period DESC;
+```
 
-#### `raw_pvwatts`
-One row per NREL PVWatts API call.
+## Two commands
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | INTEGER | Auto-increment |
-| `fetched_at` | TIMESTAMP | When we called the API |
-| `lat`, `lon` | DOUBLE | Site coordinates |
-| `system_kw` | DOUBLE | Requested system size |
-| `ac_annual_kwh` | DOUBLE | Annual production estimate |
-| `capacity_factor` | DOUBLE | % |
-| `station_distance_m` | DOUBLE | Nearest weather station |
-| `pvwatts_version` | VARCHAR | API version (e.g. "8.5.0") |
-| `response_json` | JSON | Full PVWatts response |
+```bash
+# Add a new quote (needs API keys)
+python3 solar_etl.py --location 94061 --monthly-kwh 650
 
-#### `raw_urdb`
-One row per utility rate lookup (URDB, NREL v3, EIA fallback, or bundled TOU).
+# Query everything (no keys needed)
+duckdb data/warehouse/solar.duckdb
+```
 
-| Column | Type | Notes |
-|---|---|---|
-| `utility_name` | VARCHAR | e.g. "Pacific Gas & Electric Co" |
-| `rate_name` | VARCHAR | e.g. "E-TOU-C (bundled 2024 schedule)" |
-| `flat_rate` | DOUBLE | Weighted average $/kWh |
-| `is_tou` / `is_tiered` | BOOLEAN | Rate structure |
-| `source` | VARCHAR | `urdb_full` / `urdb_tiered_avg` / `nrel_v3` / `eia_live` / `bundled_tou` |
-| `effective_date` | DATE | When the rate took effect |
-| `response_json` | JSON | Full URDB tariff JSON |
+Or from Python:
+```python
+from solar_warehouse import get_conn
+df = get_conn().execute("SELECT * FROM raw_quote").df()
+```
 
-#### `raw_eia`
-One row per EIA state-level rate lookup.
+## Three audit tables
 
-| Column | Type | Notes |
-|---|---|---|
-| `state` | VARCHAR | Two-letter code |
-| `period` | VARCHAR | e.g. "2026-01" |
-| `rate_dollars_per_kwh` | DOUBLE | Residential avg |
-| `source` | VARCHAR | `eia_live` or `eia_bundled_2025` |
+You probably won't touch these, but they're there for debugging or re-parsing raw responses if a formula changes:
 
-#### `raw_geocode`
-One row per address → lat/lon resolution.
+| Table | What it stores |
+|---|---|
+| `raw_pvwatts` | Every NREL PVWatts call, with the full JSON response |
+| `raw_urdb` | Every utility rate lookup (URDB, NREL v3, EIA, bundled TOU) |
+| `raw_geocode` | Every address → lat/lon resolution |
 
-| Column | Type | Notes |
-|---|---|---|
-| `query` | VARCHAR | What the user typed |
-| `source` | VARCHAR | `uszips` / `census` / `nominatim` |
-| `confidence` | VARCHAR | `high` / `medium` / `low` |
+## Example queries for your EDA
 
-#### `raw_quote`
-One row per end-to-end quote. All the top-line numbers, plus the full `QuoteResult` JSON.
+### How does viability score vary by state?
+```sql
+SELECT state, count(*) AS n, round(avg(viability_score), 1) AS avg_score
+FROM raw_quote
+GROUP BY state
+ORDER BY avg_score DESC;
+```
 
-| Column | Type | Notes |
-|---|---|---|
-| `location_query` | VARCHAR | Original input (e.g. "94061") |
-| `viability_score` | DOUBLE | 0-100 |
-| `viability_label` | VARCHAR | "Excellent", "Good", etc. |
-| `payback_years` | DOUBLE | Simple payback |
-| `npv_25yr` | DOUBLE | Net present value |
-| `irr` | DOUBLE | Internal rate of return |
-| `lcoe` | DOUBLE | Levelized cost of energy |
-| `confidence_level` | VARCHAR | `high` / `medium` / `low` |
-| `full_result_json` | JSON | The complete `QuoteResult` dict |
+### Which utilities have we quoted the most?
+```sql
+SELECT utility_name, count(*) AS n_quotes, round(avg(viability_score), 1) AS avg_score
+FROM raw_quote
+GROUP BY utility_name
+ORDER BY n_quotes DESC;
+```
 
-### Mart tables (dim_*, fact_*)
+### Cache hit analysis — how many quotes reuse a recent result?
+```sql
+SELECT location_query, count(*) AS hits,
+       min(fetched_at) AS first_seen,
+       max(fetched_at) AS last_seen
+FROM raw_quote
+GROUP BY location_query
+HAVING count(*) > 1;
+```
 
-**Note:** mart tables exist in the schema but are empty until Phase 2 (the mart build script) lands. See `sql/build_marts.sql` (coming soon).
-
-- `dim_location` — deduplicated sites
-- `dim_utility` — utility territories
-- `dim_tariff` — rate schedules with SCD Type 2 (`effective_from`, `effective_to`)
-- `fact_quote` — quote outcomes joinable to dimensions
-- `fact_rate_history` — rate time series for trend analysis
-
-## Example queries for teammates
-
-### What's the latest quote for each CA ZIP?
+### Latest quote per ZIP in California
 ```sql
 SELECT location_query, viability_score, payback_years, utility_name
 FROM raw_quote
@@ -114,27 +98,12 @@ WHERE state = 'CA'
 QUALIFY row_number() OVER (PARTITION BY zip_code ORDER BY fetched_at DESC) = 1;
 ```
 
-### Have PG&E rates changed in the data we've collected?
+### How have EIA rates moved over the last year?
 ```sql
-SELECT rate_name, flat_rate, effective_date, fetched_at
-FROM raw_urdb
-WHERE utility_name LIKE '%Pacific Gas%'
-ORDER BY fetched_at DESC;
-```
-
-### Distribution of viability scores by state
-```sql
-SELECT state, count(*) as n, round(avg(viability_score), 1) as avg_score
-FROM raw_quote
-GROUP BY state
-ORDER BY avg_score DESC;
-```
-
-### Which API sources produced each quote?
-```sql
-SELECT location_query, rate_source, confidence_level, viability_score
-FROM raw_quote
-ORDER BY fetched_at DESC;
+SELECT state, period, rate_dollars_per_kwh
+FROM raw_eia
+WHERE state IN ('CA', 'TX', 'NY', 'HI')
+ORDER BY period DESC, state;
 ```
 
 ## Connecting from a notebook
@@ -144,26 +113,20 @@ import pandas as pd
 from solar_warehouse import get_conn
 
 conn = get_conn()
-df = conn.execute("SELECT * FROM raw_quote").df()  # .df() returns a DataFrame
-df.head()
+df = conn.execute("SELECT * FROM raw_quote").df()
+df.describe()
 ```
-
-## When to refresh
-
-Staging tables grow forever (keeping the history). If your `.duckdb` file gets large:
-
-```python
-# Keep last 90 days only
-from solar_warehouse import get_conn
-conn = get_conn()
-conn.execute("""
-    DELETE FROM raw_pvwatts
-    WHERE fetched_at < now() - INTERVAL 90 DAYS
-""")
-```
-
-For the semester, don't prune. The history is the point.
 
 ## Who needs API keys?
 
-Only **the person running `solar_etl.py`**. Once the `.duckdb` file is populated and shared (via git or a file transfer), everyone else can query without keys.
+Only the person running `solar_etl.py` (or starting the FastAPI app, since it may call ETL on cache miss). Once the `.duckdb` file is populated and shared, **teammates running EDA don't need any keys**. That's the whole point.
+
+## When to prune
+
+Staging tables grow forever. For a semester project, don't prune — the history is the point. If the file gets >500 MB, you can trim old rows:
+
+```python
+from solar_warehouse import get_conn
+conn = get_conn()
+conn.execute("DELETE FROM raw_pvwatts WHERE fetched_at < now() - INTERVAL 90 DAYS")
+```

@@ -148,102 +148,89 @@ CREATE TABLE IF NOT EXISTS raw_quote (
 );
 """
 
-# Mart tables: cleaned, joinable, dimensional. Built by sql/build_marts.sql.
-# Defined here so we can CREATE them (empty) during schema init — the mart
-# build script populates them from staging.
-
-MART_DDL = """
--- Shared sequences for mart surrogate keys
-CREATE SEQUENCE IF NOT EXISTS seq_location_id START 1;
-CREATE SEQUENCE IF NOT EXISTS seq_utility_id START 1;
-CREATE SEQUENCE IF NOT EXISTS seq_tariff_id START 1;
-CREATE SEQUENCE IF NOT EXISTS seq_quote_id START 1;
-
-CREATE TABLE IF NOT EXISTS dim_location (
-    location_id         INTEGER DEFAULT nextval('seq_location_id') PRIMARY KEY,
-    lat                 DOUBLE NOT NULL,
-    lon                 DOUBLE NOT NULL,
-    state               VARCHAR,
-    zip_code            VARCHAR,
-    city                VARCHAR,
-    county              VARCHAR,
-    first_seen_at       TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS dim_utility (
-    utility_id          INTEGER DEFAULT nextval('seq_utility_id') PRIMARY KEY,
-    utility_name        VARCHAR NOT NULL,
-    state               VARCHAR,
-    first_seen_at       TIMESTAMP
-);
-
--- SCD Type 2: one row per (utility, rate_name, effective_from).
--- effective_to = NULL means "currently in effect"
-CREATE TABLE IF NOT EXISTS dim_tariff (
-    tariff_id           INTEGER DEFAULT nextval('seq_tariff_id') PRIMARY KEY,
-    utility_id          INTEGER,
-    rate_name           VARCHAR,
-    flat_rate           DOUBLE,
-    is_tou              BOOLEAN,
-    is_tiered           BOOLEAN,
-    effective_from      DATE,
-    effective_to        DATE,
-    source              VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS fact_quote (
-    quote_id            INTEGER DEFAULT nextval('seq_quote_id') PRIMARY KEY,
-    raw_quote_id        INTEGER,
-    created_at          TIMESTAMP,
-    location_id         INTEGER,
-    utility_id          INTEGER,
-    tariff_id           INTEGER,
-    system_kw           DOUBLE,
-    viability_score     DOUBLE,
-    payback_years       DOUBLE,
-    npv_25yr            DOUBLE,
-    irr                 DOUBLE,
-    lcoe                DOUBLE,
-    co2_avoided_tons    DOUBLE,
-    confidence_level    VARCHAR,
-    geocode_source      VARCHAR,
-    rate_source         VARCHAR,
-    export_policy       VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS fact_rate_history (
-    state               VARCHAR,
-    period              DATE,
-    rate_dollars_per_kwh DOUBLE,
-    source              VARCHAR,
-    PRIMARY KEY (state, period)
-);
-"""
-
-
 def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """
-    Create all staging and mart tables if they don't already exist.
+    Create all staging tables if they don't already exist.
 
     Safe to call repeatedly — uses CREATE TABLE IF NOT EXISTS.
+
+    The warehouse has only ``raw_*`` staging tables — no mart layer.
+    For a class-sized dataset, querying the staging tables directly
+    (with the full JSON response preserved) is simpler and more flexible
+    than maintaining a dim/fact star schema.
     """
     conn.execute(STAGING_DDL)
-    conn.execute(MART_DDL)
     logger.info("Warehouse schema ready")
 
 
 def drop_all(conn: duckdb.DuckDBPyConnection) -> None:
     """Drop every table (and sequence) in the warehouse. Dangerous — testing only."""
-    tables = [
-        "raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote",
-        "dim_location", "dim_utility", "dim_tariff",
-        "fact_quote", "fact_rate_history",
-    ]
+    tables = ["raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote"]
     for t in tables:
         conn.execute(f"DROP TABLE IF EXISTS {t}")
-    for s in ["seq_staging_id", "seq_location_id", "seq_utility_id",
-              "seq_tariff_id", "seq_quote_id"]:
-        conn.execute(f"DROP SEQUENCE IF EXISTS {s}")
+    conn.execute("DROP SEQUENCE IF EXISTS seq_staging_id")
+
+
+def quote_from_dict(d: dict):
+    """
+    Rehydrate a QuoteResult from its ``to_dict()`` output.
+
+    The ``raw_quote.full_result_json`` column stores the full serialized
+    QuoteResult.  When the OLTP app hits a cache hit in the warehouse,
+    this function reconstructs the full object tree so the report can
+    be re-rendered without any live API calls.
+
+    Imports are lazy to avoid circular imports at module load time.
+
+    Parameters
+    ----------
+    d : dict
+        The deserialized JSON from ``raw_quote.full_result_json``
+        (i.e. ``QuoteResult.to_dict()`` output).
+
+    Returns
+    -------
+    QuoteResult
+        A fully populated QuoteResult. Note that ``RateResult.hourly_rates``
+        (a numpy array, not JSON-serializable) is set to ``None`` and
+        ``RateResult.raw`` (the original API response) is set to ``{}``.
+        Everything else round-trips exactly.
+    """
+    from solar_fetch import QuoteResult
+    from solar_economics import SiteResult
+    from solar_geocode import GeocodeResult
+    from solar_pvwatts import PVWattsResult
+    from solar_urdb import RateResult
+    from solar_nem import ExportValueResult
+
+    def _fields_only(cls, data):
+        return {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+
+    rate_data = _fields_only(RateResult, d["rate"])
+    # hourly_rates is a numpy array and isn't persisted in full_result_json
+    rate_data["hourly_rates"] = None
+    rate_data["raw"] = {}
+
+    # effective_date is stored as an ISO string (or null); dataclass expects date|None
+    ed = rate_data.get("effective_date")
+    if isinstance(ed, str):
+        from datetime import date as _date
+        try:
+            rate_data["effective_date"] = _date.fromisoformat(ed)
+        except ValueError:
+            rate_data["effective_date"] = None
+
+    return QuoteResult(
+        site_result=SiteResult(**_fields_only(SiteResult, d["site"])),
+        geocode_result=GeocodeResult(**_fields_only(GeocodeResult, d["geocode"])),
+        pvwatts_result=PVWattsResult(**_fields_only(PVWattsResult, d["pvwatts"])),
+        rate_result=RateResult(**rate_data),
+        export_result=ExportValueResult(**_fields_only(ExportValueResult, d["export"])),
+        system_kw_used=d["meta"]["system_kw_used"],
+        system_sizing_method=d["meta"]["system_sizing_method"],
+        confidence_level=d["meta"]["confidence_level"],
+        confidence_reasons=d["meta"]["confidence_reasons"],
+    )
 
 
 def latest_quote(
