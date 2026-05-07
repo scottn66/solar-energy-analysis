@@ -390,6 +390,7 @@ class TestWarehouse:
         counts = table_counts(conn)
         expected = {
             "raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote",
+            "raw_tts_installations",
         }
         assert expected.issubset(set(counts.keys()))
         # All tables should start empty
@@ -604,6 +605,54 @@ class TestWarehouse:
             mock_live.assert_not_called()
             # The response should contain Redwood City from our cached row
             assert "Redwood City" in resp.text or "94061" in resp.text
+
+    def test_load_tts_inserts_rows(self, tmp_path):
+        """load_tts() should bulk-load the cleaned CSV into raw_tts_installations."""
+        from solar_etl import load_tts
+        from solar_warehouse import get_conn, ensure_schema
+
+        # Write a tiny CSV with the same column order as etl/clean_tts.py output.
+        # 25 columns matching the cleaned CSV header.
+        csv_path = tmp_path / "mini_tts.csv"
+        header = (
+            "installation_date,PV_system_size_DC,total_installed_price,"
+            "rebate_or_grant,customer_segment,tracking,ground_mounted,"
+            "zip_code,state,utility_service_territory,third_party_owned,"
+            "installer_name,azimuth_1,tilt_1,module_manufacturer_1,"
+            "module_model_1,module_quantity_1,technology_module_1,"
+            "efficiency_module_1,inverter_manufacturer_1,inverter_model_1,"
+            "output_capacity_inverter_1,inverter_loading_ratio,"
+            "battery_rated_capacity_kWh,price_per_watt"
+        )
+        rows = [
+            "2024-06-01,5.0,17500.0,0.0,RES_SF,0.0,0.0,94061,CA,PG&E,"
+            "0.0,Sunrun,180.0,20.0,REC Solar,REC400,12,Mono-c-Si,0.21,"
+            "Enphase,IQ8,5.0,1.0,,3.50",
+            "2024-07-15,8.4,29400.0,2000.0,RES_SF,0.0,0.0,78701,TX,Oncor,"
+            "0.0,Tesla,180.0,25.0,Q CELLS,Q.PEAK,21,Mono-c-Si,0.205,"
+            "SolarEdge,HD-Wave,8.0,1.05,13.5,3.50",
+        ]
+        csv_path.write_text(header + "\n" + "\n".join(rows) + "\n")
+
+        db = tmp_path / "test.duckdb"
+        n = load_tts(csv_path, db_path=db)
+        assert n == 2
+
+        # Verify columns came in correctly typed and queryable
+        conn = get_conn(db)
+        ensure_schema(conn)
+        ca_row = conn.execute("""
+            SELECT state, installer_name, price_per_watt
+            FROM raw_tts_installations
+            WHERE state = 'CA'
+        """).fetchone()
+        assert ca_row == ("CA", "Sunrun", 3.50)
+
+        # Calling load_tts twice with truncate=True (default) should keep
+        # the row count constant — proves idempotence
+        n2 = load_tts(csv_path, db_path=db)
+        assert n2 == 2
+        conn.close()
 
     def test_staging_row_is_queryable(self, tmp_path):
         """After writing a quote, SELECT queries should return sensible data."""

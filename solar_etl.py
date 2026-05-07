@@ -245,6 +245,84 @@ def etl_status(db_path: Optional[Path] = None) -> dict[str, int]:
         conn.close()
 
 
+def load_tts(
+    csv_path: Path | str,
+    db_path: Optional[Path] = None,
+    truncate: bool = True,
+) -> int:
+    """
+    Bulk-load the cleaned LBNL Tracking the Sun CSV into raw_tts_installations.
+
+    The CSV is the output of ``etl/clean_tts.py`` — already null-safe, with
+    -1 sentinels removed and zip codes normalized.  This function streams it
+    directly into DuckDB via ``read_csv_auto`` (no pandas in the middle).
+
+    Parameters
+    ----------
+    csv_path : Path or str
+        Path to the cleaned CSV (typically ``data/tts_cleaned.csv``).
+    db_path : Path, optional
+        Custom warehouse path.  Defaults to ``data/warehouse/solar.duckdb``.
+    truncate : bool
+        If True (default), DELETE existing rows before loading.  Idempotent:
+        re-running on the same file produces the same row count.
+
+    Returns
+    -------
+    int
+        Number of rows loaded into ``raw_tts_installations``.
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Cleaned TTS CSV not found: {csv_path}")
+
+    conn = get_conn(db_path)
+    ensure_schema(conn)
+    try:
+        if truncate:
+            n_before = conn.execute(
+                "SELECT count(*) FROM raw_tts_installations"
+            ).fetchone()[0]
+            conn.execute("DELETE FROM raw_tts_installations")
+            if n_before:
+                logger.info("Truncated raw_tts_installations (was %d rows)", n_before)
+
+        # DuckDB reads the CSV directly. The 25-column order in the cleaned
+        # CSV matches our table definition exactly (after id and loaded_at).
+        # We let DuckDB auto-detect dtypes and only override zip_code (it
+        # arrives as integer-looking but must stay a string for joins).
+        logger.info("Loading TTS CSV: %s", csv_path)
+        conn.execute(
+            f"""
+            INSERT INTO raw_tts_installations (
+                loaded_at, installation_date, PV_system_size_DC,
+                total_installed_price, rebate_or_grant, customer_segment,
+                tracking, ground_mounted, zip_code, state,
+                utility_service_territory, third_party_owned, installer_name,
+                azimuth_1, tilt_1, module_manufacturer_1, module_model_1,
+                module_quantity_1, technology_module_1, efficiency_module_1,
+                inverter_manufacturer_1, inverter_model_1,
+                output_capacity_inverter_1, inverter_loading_ratio,
+                battery_rated_capacity_kWh, price_per_watt
+            )
+            SELECT now() AS loaded_at, *
+            FROM read_csv_auto(
+                '{csv_path}',
+                header=true,
+                types={{'zip_code': 'VARCHAR'}}
+            )
+            """
+        )
+
+        n_loaded = conn.execute(
+            "SELECT count(*) FROM raw_tts_installations"
+        ).fetchone()[0]
+        logger.info("Loaded %s rows into raw_tts_installations", f"{n_loaded:,}")
+        return int(n_loaded)
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -257,6 +335,7 @@ def main():
   python3 solar_etl.py --location 94061 --monthly-kwh 650
   python3 solar_etl.py --location "Boulder, CO" --system-kw 8
   python3 solar_etl.py --status
+  python3 solar_etl.py --load-tts data/tts_cleaned.csv
 """,
     )
     parser.add_argument("--location", help="Address, city+state, or ZIP")
@@ -267,6 +346,9 @@ def main():
                         help="Installation date (YYYY-MM-DD)")
     parser.add_argument("--status", action="store_true",
                         help="Print warehouse row counts and exit")
+    parser.add_argument("--load-tts", type=str, metavar="CSV_PATH",
+                        help="Bulk-load the cleaned TTS CSV into "
+                             "raw_tts_installations and exit")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -279,11 +361,19 @@ def main():
         counts = etl_status()
         print("Warehouse tables:")
         for name, count in sorted(counts.items()):
-            print(f"  {name:20s}  {count:>8} rows")
+            print(f"  {name:30s}  {count:>10,} rows")
+        return
+
+    if args.load_tts:
+        n = load_tts(args.load_tts)
+        print(f"\n  Loaded {n:,} rows into raw_tts_installations")
+        print(f"  Warehouse status:")
+        for name, count in sorted(etl_status().items()):
+            print(f"    {name:30s}  {count:>10,} rows")
         return
 
     if not args.location:
-        parser.error("--location is required (or use --status)")
+        parser.error("--location is required (or use --status / --load-tts)")
 
     install_dt = None
     if args.install_date:

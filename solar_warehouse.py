@@ -146,6 +146,44 @@ CREATE TABLE IF NOT EXISTS raw_quote (
     confidence_reasons  JSON,
     full_result_json    JSON
 );
+
+-- LBNL "Tracking the Sun" cleaned residential installations.
+-- Loaded in bulk from etl/clean_tts.py output via solar_etl.load_tts().
+-- ~2.6M rows when fully populated. Used for:
+--   1. Replacing the hardcoded $3.50/W default in solar_economics.Assumptions
+--      with state-specific medians ($/W varies meaningfully by state).
+--   2. Real peer-distribution data for the "Peer Comparison" chart in
+--      solar_viz (currently uses np.random.normal()).
+--   3. Unblocking teammates' EDA without needing API keys.
+CREATE TABLE IF NOT EXISTS raw_tts_installations (
+    id                  INTEGER DEFAULT nextval('seq_staging_id') PRIMARY KEY,
+    loaded_at           TIMESTAMP NOT NULL,
+    installation_date   DATE,
+    PV_system_size_DC   DOUBLE,
+    total_installed_price DOUBLE,
+    rebate_or_grant     DOUBLE,
+    customer_segment    VARCHAR,
+    tracking            DOUBLE,
+    ground_mounted      DOUBLE,
+    zip_code            VARCHAR,
+    state               VARCHAR,
+    utility_service_territory VARCHAR,
+    third_party_owned   DOUBLE,
+    installer_name      VARCHAR,
+    azimuth_1           DOUBLE,
+    tilt_1              DOUBLE,
+    module_manufacturer_1 VARCHAR,
+    module_model_1      VARCHAR,
+    module_quantity_1   DOUBLE,
+    technology_module_1 VARCHAR,
+    efficiency_module_1 DOUBLE,
+    inverter_manufacturer_1 VARCHAR,
+    inverter_model_1    VARCHAR,
+    output_capacity_inverter_1 DOUBLE,
+    inverter_loading_ratio DOUBLE,
+    battery_rated_capacity_kWh DOUBLE,
+    price_per_watt      DOUBLE
+);
 """
 
 def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -165,7 +203,8 @@ def ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 def drop_all(conn: duckdb.DuckDBPyConnection) -> None:
     """Drop every table (and sequence) in the warehouse. Dangerous — testing only."""
-    tables = ["raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote"]
+    tables = ["raw_pvwatts", "raw_urdb", "raw_eia", "raw_geocode", "raw_quote",
+              "raw_tts_installations"]
     for t in tables:
         conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.execute("DROP SEQUENCE IF EXISTS seq_staging_id")

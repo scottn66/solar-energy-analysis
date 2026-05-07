@@ -6,6 +6,10 @@
 TTS_LBNL_*.csv
 solar_master_feature_table.csv
 enriched_sites.csv
+data/tts_raw.csv
+data/tts_raw.zip
+data/tts_cleaned.csv
+etl/cleaning.log
 
 # Keep sample data files
 # !sample_site.csv is small and committed
@@ -40,6 +44,18 @@ site_reports/
 solar_report.html
 node_modules
 package*.json
+
+# Generated HTML reports (use --output to write them; not for git)
+report_*.html
+
+# Local editor / agent state
+.claude/
+
+# GitHub Pages deploy clone (nested git repo from earlier deploy attempt)
+_deploy/
+
+# Word-doc copies of generated docs (the .md is the source of truth)
+docs/*.docx
 
 # DuckDB warehouse — built by ETL, can be regenerated.
 # If you want teammates to pull a pre-built snapshot, comment these lines out
