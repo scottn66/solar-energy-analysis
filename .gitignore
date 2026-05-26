@@ -48,6 +48,13 @@ package*.json
 # Generated HTML reports (use --output to write them; not for git)
 report_*.html
 
+# Synthetic portfolio outputs (regenerable via build_portfolio.py)
+portfolio_sites.csv
+portfolio_sites.json
+portfolio_for_dashboard.json
+portfolio_for_dashboard.min.json
+portfolio_dashboard.html
+
 # Local editor / agent state
 .claude/
 
