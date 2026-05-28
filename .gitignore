@@ -55,6 +55,10 @@ portfolio_for_dashboard.json
 portfolio_for_dashboard.min.json
 portfolio_dashboard.html
 
+# Generated heatmap HTML (regenerable via build_heatmap.py)
+heatmap_ca.html
+heatmap_norcal.html
+
 # Local editor / agent state
 .claude/
 
