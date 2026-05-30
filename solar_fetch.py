@@ -114,6 +114,11 @@ def _assess_confidence(
         reasons.append(f"Rate: URDB full parse ({rate.rate_name})")
     elif rate.source == "urdb_tiered_avg":
         reasons.append(f"Rate: URDB tiered average ({rate.rate_name})")
+    elif rate.source == "bundled_tou":
+        # Curated current-year TOU schedule that the staleness guard
+        # substitutes for stale/expired URDB rates. This is a deliberate,
+        # high-quality replacement — not a degraded fallback.
+        reasons.append(f"Rate: bundled current TOU schedule ({rate.rate_name})")
     elif rate.source == "nrel_v3":
         reasons.append("Rate: NREL v3 simple lookup (less precise)")
     else:
@@ -132,7 +137,7 @@ def _assess_confidence(
     fallback_count = 0
     if geo.confidence != "high":
         fallback_count += 1
-    if rate.source not in ("urdb_full", "urdb_tiered_avg"):
+    if rate.source not in ("urdb_full", "urdb_tiered_avg", "bundled_tou"):
         fallback_count += 1
     if dist_km >= 50:
         fallback_count += 1
