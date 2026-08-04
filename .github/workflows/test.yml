@@ -29,4 +29,4 @@ jobs:
         env:
           NREL_API_KEY: dummy_key_for_ci
           EIA_API_KEY: dummy_key_for_ci
-        run: pytest test_solar_economics.py test_integration.py -v
+        run: pytest test_solar_economics.py test_integration.py test_oregon.py -v

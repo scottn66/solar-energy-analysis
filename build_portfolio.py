@@ -104,6 +104,17 @@ STATE_TTS_RECENT = {
     "AK": 1100,
 }
 
+# City-level climate multiplier overrides for places the coarse state-level
+# multiplier badly misrepresents.  Central Oregon sits in the Cascade rain
+# shadow: Bend/Redmond high desert gets ~300 sunny days while the state
+# multiplier (0.88) is calibrated to the cloudy Willamette Valley where most
+# Oregonians live.  Values back out to ~1500 kWh/kW/yr, matching NREL
+# PVWatts for the area.
+CITY_CLIMATE_MULT = {
+    ("Bend", "OR"):    1.19,   # → ~1,475 kWh/kW/yr
+    ("Redmond", "OR"): 1.22,   # → ~1,500 kWh/kW/yr
+}
+
 # Hand-picked representative anchor cities (city, state, lat, lon, zip)
 ANCHORS = [
     ("Birmingham", "AL", 33.5207, -86.8025, 35203),
@@ -147,6 +158,8 @@ ANCHORS = [
     ("Columbus", "OH", 39.9612, -82.9988, 43201),
     ("Oklahoma City", "OK", 35.4676, -97.5164, 73101),
     ("Portland", "OR", 45.5152, -122.6784, 97201),
+    ("Bend", "OR", 44.0582, -121.3153, 97701),
+    ("Redmond", "OR", 44.2767, -121.1896, 97756),
     ("Philadelphia", "PA", 39.9526, -75.1652, 19101),
     ("Providence", "RI", 41.8240, -71.4128, 2901),
     ("Charleston", "SC", 32.7765, -79.9311, 29401),
@@ -190,7 +203,10 @@ def synthesize_row(
     segment: str = "RES",
 ) -> dict:
     """Build a row dict shaped like enriched_sites.csv input columns."""
-    base_yield = specific_yield_from_lat(lat) * STATE_CLIMATE_MULT.get(state, 0.95)
+    climate_mult = CITY_CLIMATE_MULT.get(
+        (city, state), STATE_CLIMATE_MULT.get(state, 0.95)
+    )
+    base_yield = specific_yield_from_lat(lat) * climate_mult
     # +/- 4% site-level noise (roof orientation, microclimate)
     yield_kwh_per_kw = base_yield * (1 + random.uniform(-0.04, 0.04))
     annual_kwh = yield_kwh_per_kw * capacity_kw
@@ -245,8 +261,9 @@ def main():
         flat["cumulative_grid_cost_json"] = json.dumps([int(x) for x in result.cumulative_grid_cost])
         out_rows.append(flat)
 
-        # Larger residential 8 kW (a few states)
-        if state in {"CA", "TX", "FL", "AZ", "NY", "MA", "NJ", "CO", "HI"}:
+        # Larger residential 8 kW (a few states; OR included so the Central
+        # Oregon anchors get a larger-system variant too)
+        if state in {"CA", "TX", "FL", "AZ", "NY", "MA", "NJ", "CO", "HI", "OR"}:
             row2 = synthesize_row(city, state, lat, lon, zip_code, capacity_kw=8.0, segment="RES")
             r2 = score_site(row2, DEFAULTS)
             flat2 = {**row2}

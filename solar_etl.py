@@ -235,6 +235,81 @@ def etl_quote(
         conn.close()
 
 
+def etl_batch(
+    csv_path: Path | str,
+    db_path: Optional[Path] = None,
+) -> dict[str, list]:
+    """
+    Run :func:`etl_quote` for every row of a batch CSV and persist each
+    result to the warehouse.  This is the one-command way to populate the
+    warehouse for a whole region, e.g.::
+
+        python3 solar_etl.py --batch data/oregon_locations.csv
+
+    CSV format (``#`` comment lines ignored)::
+
+        location,monthly_kwh,system_kw,note
+        97756,900,,Redmond — Central Electric Co-op
+
+    ``location`` is required (ZIP or "City, ST"); ``monthly_kwh`` and
+    ``system_kw`` are optional floats; ``note`` is echoed to the console.
+    A failing row is reported and skipped — one bad address doesn't abort
+    the batch.
+
+    Returns
+    -------
+    dict
+        ``{"ok": [(location, viability_score), ...],
+           "failed": [(location, error_message), ...]}``
+    """
+    import csv as _csv
+
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Batch CSV not found: {csv_path}")
+
+    rows: list[dict] = []
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        lines = (line for line in fh if not line.lstrip().startswith("#"))
+        for row in _csv.DictReader(lines):
+            if (row.get("location") or "").strip():
+                rows.append(row)
+
+    ok: list[tuple[str, float]] = []
+    failed: list[tuple[str, str]] = []
+    print(f"Batch ETL: {len(rows)} locations from {csv_path}")
+
+    for idx, row in enumerate(rows, 1):
+        location = row["location"].strip()
+        note = (row.get("note") or "").strip()
+
+        def _opt_float(key: str) -> Optional[float]:
+            val = (row.get(key) or "").strip()
+            return float(val) if val else None
+
+        label = f"{location}" + (f"  ({note})" if note else "")
+        print(f"  [{idx}/{len(rows)}] {label}")
+        try:
+            quote = etl_quote(
+                location=location,
+                monthly_kwh=_opt_float("monthly_kwh"),
+                system_kw=_opt_float("system_kw"),
+                db_path=db_path,
+            )
+            r = quote.site_result
+            print(f"      score={r.viability_score:.0f}  "
+                  f"payback={r.simple_payback_years:.1f} yr  "
+                  f"rate=${r.electricity_rate_used:.3f}/kWh  "
+                  f"({quote.rate_result.utility_name[:36]})")
+            ok.append((location, r.viability_score))
+        except Exception as exc:
+            print(f"      FAILED: {type(exc).__name__}: {exc}")
+            failed.append((location, f"{type(exc).__name__}: {exc}"))
+
+    print(f"Batch complete: {len(ok)} ok, {len(failed)} failed.")
+    return {"ok": ok, "failed": failed}
+
+
 def etl_status(db_path: Optional[Path] = None) -> dict[str, int]:
     """Return row counts for every warehouse table (sanity check)."""
     conn = get_conn(db_path)
@@ -334,6 +409,7 @@ def main():
         epilog="""Examples:
   python3 solar_etl.py --location 94061 --monthly-kwh 650
   python3 solar_etl.py --location "Boulder, CO" --system-kw 8
+  python3 solar_etl.py --batch data/oregon_locations.csv
   python3 solar_etl.py --status
   python3 solar_etl.py --load-tts data/tts_cleaned.csv
 """,
@@ -349,6 +425,10 @@ def main():
     parser.add_argument("--load-tts", type=str, metavar="CSV_PATH",
                         help="Bulk-load the cleaned TTS CSV into "
                              "raw_tts_installations and exit")
+    parser.add_argument("--batch", type=str, metavar="CSV_PATH",
+                        help="Run the full pipeline for every location in a "
+                             "batch CSV (see data/oregon_locations.csv) and "
+                             "persist each to the warehouse")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -372,8 +452,18 @@ def main():
             print(f"    {name:30s}  {count:>10,} rows")
         return
 
+    if args.batch:
+        summary = etl_batch(args.batch)
+        print("\n  Warehouse status:")
+        for name, count in sorted(etl_status().items()):
+            if count > 0:
+                print(f"    {name:30s}  {count:>10,} rows")
+        if summary["failed"]:
+            raise SystemExit(1)
+        return
+
     if not args.location:
-        parser.error("--location is required (or use --status / --load-tts)")
+        parser.error("--location is required (or use --status / --load-tts / --batch)")
 
     install_dt = None
     if args.install_date:

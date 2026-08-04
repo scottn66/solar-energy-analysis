@@ -79,6 +79,30 @@ REDUCED_NEM_STATES: dict[str, float] = {
 # utility-specific and hard to generalise.
 DEREGULATED_STATES: set[str] = {"TX", "OK"}
 
+# State-specific policy detail appended to the generic 1:1 explanation.
+STATE_NEM_NOTES: dict[str, str] = {
+    "OR": (
+        " Oregon's statute (ORS 757.300) credits exported kWh at full retail "
+        "value (25 kW residential cap) with a March annual true-up; unused "
+        "credits are granted to the utility's low-income bill-assistance "
+        "program."
+    ),
+}
+
+# Oregon consumer-owned utilities are covered by the statute but their
+# boards set the terms: Central Electric (Redmond/Sisters) and Midstate
+# Electric (La Pine/Sunriver) net kWh monthly at retail but cash out any
+# monthly surplus at their wholesale/avoided-cost rate (~$0.05/kWh as of
+# late 2025) — there is no annual retail banking.
+OR_COOP_UTILITY_PATTERNS: tuple[str, ...] = (
+    "central electric", "midstate electric", "mid-state electric",
+)
+
+# Blended export multiplier for those co-ops: monthly netting still offsets
+# most exports at retail for a load-sized system; only the summer surplus
+# overflows to the ~$0.05/kWh wholesale credit.
+OR_COOP_EXPORT_RATIO = 0.90
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -195,6 +219,7 @@ def get_export_value(
     install_date: date = date.today(),
     hourly_production: np.ndarray | None = None,
     hourly_rates: np.ndarray | None = None,
+    utility_name: str | None = None,
 ) -> ExportValueResult:
     """Determine the export compensation rate for a residential solar system.
 
@@ -202,11 +227,14 @@ def get_export_value(
 
     1. **California NEM 3.0** -- time-varying avoided-cost rates (post
        2023-04-15 interconnections).
-    2. **1:1 net metering** -- full retail credit (NJ, NY, MA, etc.).
-    3. **Reduced NEM** -- a fraction of retail (IN, FL, GA, etc.).
-    4. **Deregulated markets** -- utility-specific, estimated at 50% of
+    2. **Oregon co-ops** -- monthly netting with wholesale-rate surplus
+       cash-out (Central Electric, Midstate Electric), when the utility
+       name is known.
+    3. **1:1 net metering** -- full retail credit (NJ, NY, OR, MA, etc.).
+    4. **Reduced NEM** -- a fraction of retail (IN, FL, GA, etc.).
+    5. **Deregulated markets** -- utility-specific, estimated at 50% of
        retail (TX, OK).
-    5. **Default** -- 75% of retail with a logged warning.
+    6. **Default** -- 75% of retail with a logged warning.
 
     Parameters
     ----------
@@ -223,6 +251,10 @@ def get_export_value(
         rate.  Ignored for other states.
     hourly_rates : np.ndarray or None, optional
         Reserved for future use (e.g. utility-specific TOU schedules).
+    utility_name : str or None, optional
+        The serving utility, when known.  Lets the lookup catch utilities
+        whose terms differ from the state default (Oregon's consumer-owned
+        co-ops).
 
     Returns
     -------
@@ -250,7 +282,30 @@ def get_export_value(
         )
 
     # ------------------------------------------------------------------
-    # 2. Full 1:1 retail-rate net metering
+    # 2. Oregon consumer-owned co-ops (board-set terms, not PUC rules)
+    # ------------------------------------------------------------------
+    if (
+        state == "OR"
+        and utility_name
+        and any(p in utility_name.lower() for p in OR_COOP_UTILITY_PATTERNS)
+    ):
+        return ExportValueResult(
+            avg_export_rate=retail_rate * OR_COOP_EXPORT_RATIO,
+            policy_name="Co-op NEM (monthly netting)",
+            explanation=(
+                f"{utility_name} nets exported kWh against consumption "
+                "within each billing month at the retail rate, but monthly "
+                "surplus is cashed out at the co-op's wholesale rate "
+                "(~$0.05/kWh) instead of banking — so exports are worth "
+                f"~{OR_COOP_EXPORT_RATIO:.0%} of retail for a load-sized "
+                "system, less if the system is oversized."
+            ),
+            state=state,
+            is_exact=False,
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Full 1:1 retail-rate net metering
     # ------------------------------------------------------------------
     if state in NEM_1_FOR_1_STATES:
         return ExportValueResult(
@@ -258,14 +313,14 @@ def get_export_value(
             policy_name="1:1 Net Metering",
             explanation=(
                 f"{state} currently offers 1:1 retail-rate net metering "
-                "for residential solar."
+                "for residential solar." + STATE_NEM_NOTES.get(state, "")
             ),
             state=state,
             is_exact=True,
         )
 
     # ------------------------------------------------------------------
-    # 3. Reduced / value-of-solar NEM
+    # 4. Reduced / value-of-solar NEM
     # ------------------------------------------------------------------
     if state in REDUCED_NEM_STATES:
         multiplier = REDUCED_NEM_STATES[state]
@@ -282,7 +337,7 @@ def get_export_value(
         )
 
     # ------------------------------------------------------------------
-    # 4. Deregulated / competitive retail markets
+    # 5. Deregulated / competitive retail markets
     # ------------------------------------------------------------------
     if state in DEREGULATED_STATES:
         return ExportValueResult(
@@ -299,7 +354,7 @@ def get_export_value(
         )
 
     # ------------------------------------------------------------------
-    # 5. Default / unknown state
+    # 6. Default / unknown state
     # ------------------------------------------------------------------
     logger.warning(
         "No specific NEM policy data for state '%s'. "

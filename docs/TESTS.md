@@ -1,6 +1,6 @@
 # Test Suite Reference
 
-**Last verified:** 64/64 passing in ~6 seconds (plus 28/28 `verify_system.py` end-to-end checks)
+**Last verified:** 96/96 passing in ~8 seconds (plus 28/28 `verify_system.py` end-to-end checks)
 
 This document describes every test in the project and what it protects against. Tests are your safety net — if you change code and a test breaks, you've probably introduced a bug.
 
@@ -8,7 +8,7 @@ This document describes every test in the project and what it protects against. 
 
 ```bash
 # Run everything
-pytest test_solar_economics.py test_integration.py -v
+pytest test_solar_economics.py test_integration.py test_oregon.py -v
 
 # Run one file
 pytest test_solar_economics.py -v
@@ -132,7 +132,7 @@ A deliberately terrible site (cloudy WA, west-facing, 5° tilt at 47° latitude,
 
 ---
 
-## File 2: `test_integration.py` — 25 tests
+## File 2: `test_integration.py` — 26 tests
 
 Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. Runs in ~6 seconds.
 
@@ -186,7 +186,7 @@ Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. 
 | `test_healthz` | GET /healthz → `{"ok": true}` |
 | `test_quote_endpoint_with_bad_location` | POST garbage → friendly HTML error card, not 500 crash |
 
-### Class: `TestWarehouse` — DuckDB warehouse layer (5 tests)
+### Class: `TestWarehouse` — DuckDB warehouse layer (6 tests)
 
 | Test | What it checks |
 |------|---------------|
@@ -194,7 +194,82 @@ Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. 
 | `test_etl_writes_staging_rows` | `etl_quote()` inserts rows into `raw_geocode`, `raw_pvwatts`, `raw_urdb`, `raw_quote` |
 | `test_quote_from_dict_roundtrip` | `quote_from_dict()` rebuilds a full `QuoteResult` from stored JSON |
 | `test_app_uses_warehouse_cache` | Second `/api/quote` for same location hits the warehouse — proves the OLTP/OLAP wiring |
+| `test_load_tts_inserts_rows` | `load_tts()` bulk-loads the cleaned TTS CSV into `raw_tts_installations` |
 | `test_staging_row_is_queryable` | Inserted rows can be queried back with expected values |
+
+---
+
+## File 3: `test_oregon.py` — 31 tests
+
+Oregon-region coverage: bundled tariffs, NEM policy (including the Central
+Oregon co-ops), the city-report list, the batch-ETL file, and the
+Cascade-aware heatmap yield model. All offline — no API keys or HTTP.
+
+### Class: `TestBundledOregonRates` — bundled rate schedules (8 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_pacific_power_matches` | "Pacific Power" → Schedule 4, plausible rate + fixed charge |
+| `test_pacificorp_matches_only_in_oregon` | OR schedule applies only to OR quotes — not UT/Rocky Mountain Power, nor the "Pacific Power" brand in WA/CA |
+| `test_portland_general_is_not_california_pge` | Oregon PGE and California PG&E resolve to different schedules (~2.5x rate gap) |
+| `test_central_electric_coop` | CEC (Redmond) → flat co-op rate + facilities charge |
+| `test_midstate_electric_coop` | Midstate (La Pine) → flat rate + $35/mo facilities charge |
+| `test_oregon_defaults_are_flat_not_tou` | OR default tariffs report `is_tou=False`, no hourly vector |
+| `test_california_schedules_still_tou` | CA IOU schedules still expand to an 8760-hour TOU vector |
+| `test_effective_dates_parsed_from_csv` | New `effective` CSV column parsed (2024 CA / 2026 OR vintages) |
+
+### Class: `TestOregonNEM` — export policy (5 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_oregon_is_one_to_one_state` | OR in the 1:1 NEM state set |
+| `test_investor_owned_utilities_get_full_retail` | Pacific Power/PGE → full retail, cites ORS 757.300 |
+| `test_central_oregon_coops_net_monthly` | CEC/Midstate → "Co-op NEM (monthly netting)" at ~90% of retail |
+| `test_coop_branch_is_oregon_only` | Similarly named utility outside OR doesn't hit the co-op branch |
+| `test_unknown_utility_falls_back_to_state_policy` | No utility name → state 1:1 default |
+
+### Class: `TestCityList` — report city list (3 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_entries_are_five_tuples_with_unique_slugs` | List shape + unique slugs + known states |
+| `test_all_zips_exist_in_uszips_with_matching_state` | Every city ZIP resolves to the declared state |
+| `test_central_oregon_cluster_present` | Bend, Redmond, Sisters, Prineville, Madras, La Pine, Sunriver, Terrebonne all present |
+
+### Class: `TestOregonBatchFile` — batch ETL input (2 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_batch_csv_parses_and_covers_central_oregon` | `data/oregon_locations.csv` parses; all ZIPs are real OR ZIPs; Bend/Redmond/Sisters/La Pine covered |
+| `test_etl_batch_missing_file_raises` | `etl_batch()` raises `FileNotFoundError` for a missing CSV |
+
+### Class: `TestOregonYieldModel` — Cascade-aware yield (5 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_bend_beats_portland_despite_higher_latitude_neighbors` | Bend out-yields Portland by >20% (rain shadow) |
+| `test_east_west_split_at_cascade_crest` | Same latitude, east of crest > west of crest |
+| `test_yields_within_plausible_band` | All sample points within 900–1,750 kWh/kW/yr |
+| `test_coastal_fog_discount` | Coast ZIPs discounted vs Willamette Valley |
+| `test_california_dispatch_unchanged` | CA still uses the original latitude-only model |
+
+### Class: `TestHeatmapUtilityAssumptions` — rate/export mapping (5 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_redmond_is_coop_with_reduced_export` | 97756 → Central Electric Co-op, 0.90 export ratio |
+| `test_bend_is_pacific_power_full_retail` | 97701 → Pacific Power, 1:1 export |
+| `test_portland_is_pge` | 97202 → PGE |
+| `test_eweb_is_eugene_city_only` | 97401 → EWEB; Roseburg 97470 (same ZIP3) → Pacific Power |
+| `test_california_assumptions_unchanged` | CA IOU/muni assumptions untouched |
+
+### Classes: `TestPortfolioOregon` + `TestEIAFallback` (3 tests)
+
+| Test | What it checks |
+|------|---------------|
+| `test_central_oregon_anchors_present` | Bend + Redmond in the portfolio anchor list |
+| `test_high_desert_yield_override` | City-level multiplier puts Bend at ~1,475 kWh/kW/yr |
+| `test_oregon_present_in_bundled_state_rates` | EIA fallback CSV has OR at $0.14/kWh |
 
 ---
 

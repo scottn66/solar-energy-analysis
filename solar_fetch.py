@@ -115,10 +115,11 @@ def _assess_confidence(
     elif rate.source == "urdb_tiered_avg":
         reasons.append(f"Rate: URDB tiered average ({rate.rate_name})")
     elif rate.source == "bundled_tou":
-        # Curated current-year TOU schedule that the staleness guard
-        # substitutes for stale/expired URDB rates. This is a deliberate,
+        # Curated current-year rate schedule that the staleness guard
+        # substitutes for stale/expired URDB rates (TOU for the CA IOUs,
+        # flat for the Oregon utilities). This is a deliberate,
         # high-quality replacement — not a degraded fallback.
-        reasons.append(f"Rate: bundled current TOU schedule ({rate.rate_name})")
+        reasons.append(f"Rate: bundled current rate schedule ({rate.rate_name})")
     elif rate.source == "nrel_v3":
         reasons.append("Rate: NREL v3 simple lookup (less precise)")
     else:
@@ -252,6 +253,7 @@ def quote_from_location(
         install_date=install_dt,
         hourly_production=None,  # TODO: derive from PVWatts monthly if TOU
         hourly_rates=rate.hourly_rates,
+        utility_name=rate.utility_name,
     )
     logger.info("Export policy: %s → $%.4f/kWh avg", export.policy_name, export.avg_export_rate)
 

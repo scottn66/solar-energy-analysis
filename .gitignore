@@ -58,6 +58,8 @@ portfolio_dashboard.html
 # Generated heatmap HTML (regenerable via build_heatmap.py)
 heatmap_ca.html
 heatmap_norcal.html
+heatmap_or.html
+heatmap_central_or.html
 
 # Local editor / agent state
 .claude/

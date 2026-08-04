@@ -1,0 +1,22 @@
+# Curated Oregon locations for one-command warehouse population:
+#     python3 solar_etl.py --batch data/oregon_locations.csv
+# Central-Oregon-heavy by design (Bend/Redmond high desert), with statewide
+# anchors for comparison.  monthly_kwh reflects typical usage (electric heat
+# is common east of the Cascades); leave blank to use the 5 kW default.
+# Columns: location (ZIP or "City, ST"), monthly_kwh, system_kw, note
+location,monthly_kwh,system_kw,note
+97701,900,,Bend — Pacific Power
+97702,950,,Bend south — Pacific Power
+97703,850,,Bend west — Pacific Power
+97756,900,,Redmond — Central Electric Co-op
+97759,800,,Sisters — Central Electric Co-op
+97760,850,,Terrebonne — Central Electric Co-op
+97754,900,,Prineville — Pacific Power
+97741,850,,Madras — Pacific Power
+97739,950,,La Pine — Midstate Electric Co-op
+97707,800,,Sunriver — Midstate Electric Co-op
+97202,750,,Portland — PGE
+97301,800,,Salem — PGE
+97401,750,,Eugene — EWEB
+97501,900,,Medford — Pacific Power
+97601,900,,Klamath Falls — Pacific Power

@@ -18,7 +18,10 @@ MANIFEST    = REPORTS_DIR / "_manifest.json"
 OUT         = REPORTS_DIR / "index.html"
 
 # Utility display abbreviations (substring → short label)
+# "portland general" must come before any PG&E-ish pattern — Oregon's PGE
+# is a different company from California's PG&E.
 UTIL_SHORT = [
+    ("portland general",            "PGE (Oregon)"),
     ("pacific gas",                 "PG&E"),
     ("southern california edison",  "SCE"),
     ("san diego gas",               "SDG&E"),
@@ -27,6 +30,10 @@ UTIL_SHORT = [
     ("city & county of san franc",  "CleanPowerSF"),
     ("city of anaheim",             "Anaheim PU"),
     ("city of riverside",           "Riverside PU"),
+    ("pacific power",               "Pacific Power"),
+    ("pacificorp",                  "Pacific Power"),
+    ("central electric",            "Central Electric Co-op"),
+    ("midstate electric",           "Midstate Electric Co-op"),
 ]
 
 
@@ -66,11 +73,27 @@ REGION_KEYWORDS = {
     "chula-vista": "socal south bay san diego", "stanford": "bay area peninsula university",
     "berkeley": "bay area east bay university", "atherton": "bay area peninsula",
     "redwood-city": "bay area peninsula", "arnold": "sierra foothills",
+    # Oregon
+    "portland-or": "willamette valley portland metro",
+    "salem-or": "willamette valley capital",
+    "eugene-or": "willamette valley lane county",
+    "medford-or": "rogue valley southern oregon",
+    "bend-or": "central oregon high desert deschutes",
+    "redmond-or": "central oregon high desert deschutes",
+    "sisters-or": "central oregon high desert deschutes",
+    "prineville-or": "central oregon high desert crook",
+    "madras-or": "central oregon high desert jefferson",
+    "la-pine-or": "central oregon high desert deschutes",
+    "sunriver-or": "central oregon high desert deschutes resort",
+    "terrebonne-or": "central oregon high desert smith rock",
 }
+
+STATE_SEARCH_WORDS = {"CA": "california ca", "OR": "oregon or"}
 
 
 def card_html(c: dict) -> str:
     name   = html.escape(c["name"])
+    state  = c.get("state", "CA")   # older manifests predate the state field
     zipc   = html.escape(str(c["zip"]))
     slug   = c["slug"]
     score  = c["score"]
@@ -85,7 +108,8 @@ def card_html(c: dict) -> str:
     vbg, vfg = verdict_style(score)
     label  = html.escape(c["label"])
     search = html.escape(
-        f'{name} {zipc} {util} {export} {REGION_KEYWORDS.get(slug, "")} solar california ca'.lower()
+        f'{name} {zipc} {util} {export} {REGION_KEYWORDS.get(slug, "")} '
+        f'solar {STATE_SEARCH_WORDS.get(state, state.lower())}'.lower()
     )
 
     return f"""    <a class="card" href="{slug}.html" data-s="{search}">
@@ -93,7 +117,7 @@ def card_html(c: dict) -> str:
         <div class="score-circle" style="background:{score_color(score)};box-shadow:0 3px 10px {score_color(score)}55;"><span>{score:.0f}</span></div>
         <div class="card-title">
           <h3>{name}</h3>
-          <div class="zip">ZIP {zipc} &middot; <span class="rank">{note}</span></div>
+          <div class="zip">{state} &middot; ZIP {zipc} &middot; <span class="rank">{note}</span></div>
         </div>
       </div>
       <div class="card-body">
@@ -238,7 +262,7 @@ def build() -> str:
 <!-- ===== Hero ===== -->
 <div class="hero">
   <h1>Is solar worth it in your city?</h1>
-  <p>Independent viability reports for {n} California locations &mdash; the 15 largest cities plus Stanford &amp; Berkeley &mdash; powered by NREL irradiance data and live utility rate detection.</p>
+  <p>Independent viability reports for {n} locations across California and Oregon &mdash; from the largest cities to the Central Oregon high desert around Bend and Redmond &mdash; powered by NREL irradiance data and live utility rate detection.</p>
   <div class="hero-nav">
     <a href="../">&#8592; Project Home</a>
     <a href="../heatmap/">View ZIP Heatmaps &rarr;</a>
@@ -273,21 +297,24 @@ def build() -> str:
       weather data from the <a href="https://developer.nrel.gov/" target="_blank" rel="noopener">NREL Developer Network</a>
       (PVWatts&nbsp;v8). The utility and electricity rate are detected automatically per ZIP; for the three
       CPUC-regulated investor-owned utilities (PG&amp;E, SCE, SDG&amp;E) we apply current <strong>NEM&nbsp;3.0</strong>
-      export pricing, while municipal utilities (LADWP, SMUD, Anaheim, Riverside) use their own net-metering tariffs.
+      export pricing, while municipal utilities (LADWP, SMUD, Anaheim, Riverside) use their own net-metering
+      tariffs. Oregon locations use the state's <strong>1:1 retail-rate net metering</strong> (ORS&nbsp;757.300)
+      with rates from Portland General Electric, Pacific Power, or the Central Oregon electric co-ops.
     </p>
     <p>
       Viability scores (0&ndash;100) combine levelized cost of energy (LCOE), simple payback period,
       net present value (NPV), solar resource quality, panel orientation, and local market maturity
       into a single weighted index (25% resource + 50% economics + 15% site fit + 10% policy).
-      A score of 65 or above is rated "Good" for most homeowners; all {n} locations here clear that bar,
-      reflecting California's high retail rates and strong solar resource.
+      A score of 65 or above is rated "Good" for most homeowners. California locations clear that bar
+      easily on high retail rates; Oregon's cheap hydro-heavy electricity stretches paybacks even where
+      the solar resource is excellent, as it is east of the Cascades in Bend and Redmond.
     </p>
     <p>
       Data sources: <a href="https://pvwatts.nrel.gov/" target="_blank" rel="noopener">NREL PVWatts</a>,
       <a href="https://openei.org/wiki/Utility_Rate_Database" target="_blank" rel="noopener">OpenEI URDB</a>,
       <a href="https://www.eia.gov/" target="_blank" rel="noopener">EIA rate data</a>, and
       <a href="https://emp.lbl.gov/tracking-the-sun" target="_blank" rel="noopener">Berkeley Lab TTS</a>.
-      Built for DATA&nbsp;201 at Cal Poly Humboldt. &mdash; <a href="../heatmap/">Explore all 2,593 CA ZIPs on the heatmap &rarr;</a>
+      Built for DATA&nbsp;201 at Cal Poly Humboldt. &mdash; <a href="../heatmap/">Explore the ZIP-level heatmaps (California &amp; Oregon) &rarr;</a>
     </p>
   </div>
 </div>

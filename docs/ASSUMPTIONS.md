@@ -23,10 +23,41 @@ Every number in the financial model is documented here with its source and ratio
 
 | Parameter | Default | Source | Notes |
 |-----------|---------|--------|-------|
-| Retail rate | State lookup | EIA Table 5.6.A | CA=$0.32, HI=$0.42, TX=$0.15. Overridden by URDB when available. |
+| Retail rate | State lookup | EIA Table 5.6.A | CA=$0.32, HI=$0.42, TX=$0.15, OR=$0.14. Overridden by URDB when available. |
 | Rate escalation | 2.5%/year | EIA AEO | Historical US average. CA has been ~4%/yr recently. Conservative. |
 | Self-consumption | 40% | Typical residential | Fraction used on-site at full retail. 60-80% with battery storage. |
-| NEM export ratio | 75% of retail | Varies by state | CA NEM 3.0 is ~17% of retail. NJ/NY are 100%. See `solar_nem.py`. |
+| NEM export ratio | 75% of retail | Varies by state | CA NEM 3.0 is ~17% of retail. NJ/NY/OR are 100%. See `solar_nem.py`. |
+
+## Oregon Region (Bend/Redmond focus)
+
+Bundled tariffs in `data/utility_tou_schedules.csv` (snapshot 2026-08; Oregon
+default residential service is flat, not TOU):
+
+| Utility | Serves | Rate used | Fixed/mo | Vintage |
+|---------|--------|-----------|----------|---------|
+| Pacific Power (PacifiCorp) | Bend, Prineville, Madras, Medford, Klamath Falls | $0.140/kWh all-in | $14.00 | 2026-04 (+2.9% adjustment) |
+| Portland General Electric (`PGE-OR`) | Portland metro, Salem | $0.157/kWh volumetric | $13.60 | 2026-04 (+5% adjustment) |
+| Central Electric Co-op (`CEC-OR`) | Redmond, Sisters, Terrebonne, Powell Butte | $0.085/kWh energy | $29.00* | 2025-10 (+8.5% BPA-driven) |
+| Midstate Electric Co-op (`Midstate-OR`) | La Pine, Sunriver, Crescent | $0.090/kWh energy | $35.00 | 2025-11 |
+
+\* CEC's exact facilities charge is published only in a PDF on cec.coop —
+verify before relying on it.
+
+**Oregon NEM policy** (see `solar_nem.py`):
+- PUC-regulated utilities (PGE, Pacific Power): full 1:1 retail-rate kWh net
+  metering under ORS 757.300, 25 kW residential cap, March annual true-up
+  (surplus credits go to low-income bill assistance). A PGE successor tariff
+  has been floated but not filed as of 2026 — review annually.
+- Consumer-owned co-ops (Central Electric, Midstate Electric): boards set
+  their own terms — monthly netting at retail with monthly surplus cashed
+  out at wholesale (~$0.047/kWh, no annual banking). Modeled as a blended
+  **90% of retail** export value for a load-sized system.
+
+**Central Oregon solar resource:** the Cascade rain shadow gives
+Bend/Redmond ~1,475–1,500 kWh/kW/yr (vs ~1,200 in Portland) — the heatmap
+yield model (`build_heatmap.py`) splits east/west at the crest (~122°W)
+rather than using latitude alone. Calibrated to NREL PVWatts, south-facing,
+latitude tilt, 14% losses.
 
 ## Environmental
 
