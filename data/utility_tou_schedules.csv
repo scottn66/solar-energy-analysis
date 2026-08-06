@@ -9,17 +9,21 @@
 # Oregon (default residential service is FLAT, not TOU — flat schedules are
 # encoded as a single 0-24h off_peak row per season; the loader detects the
 # constant price and reports is_tou=False):
-# PacifiCorp = Pacific Power (Bend, Prineville, Madras, Medford, Klamath Falls):
-#   Schedule 4 residential, all-in avg incl. delivery/supply/riders ≈ $0.140/kWh
-#   after the +2.9% 2026-04-01 adjustment; basic charge ≈ $14.00/mo.
+# PacifiCorp = Pacific Power (Bend, Redmond city core, Prineville, Madras,
+#   Medford, Klamath Falls — territories interleave with CEC around Redmond/
+#   Bend/Prineville; verify by address):
+#   Schedule 4 residential, avoidable volumetric ≈ $0.160/kWh after the +2.9%
+#   2026-04-01 adjustment (bill-average all-in incl. basic charge ≈ $0.175);
+#   basic charge ≈ $14/mo (older sources say $9.50 — verify).  A further ~11%
+#   residential increase was pending at the OPUC as of mid-2026.
 #   https://www.pacificpower.net/about/rates-regulation/oregon-rates-tariffs.html
 #   (Opt-in TOU exists — Schedule 29, on-peak 5-9pm ~$0.28 — not the default.)
 # PGE-OR = Portland General Electric (Portland metro, Salem — NOT CA's PG&E):
-#   Schedule 7 residential, volumetric all-in ≈ $0.157/kWh (incl. Sch 125
-#   power-cost update); basic $13.00 + $0.60 low-income assistance = $13.60/mo.
+#   Schedule 7 residential, avoidable volumetric ≈ $0.190/kWh after the +5%
+#   2026-04-01 adjustment (bill-average all-in ≈ $0.21); basic charge $13.00/mo.
 #   https://portlandgeneral.com/about/info/rates-and-regulatory
 #   (Opt-in Time of Day exists — on-peak 5-9pm weekdays ~$0.43 — not the default.)
-# CEC-OR = Central Electric Cooperative (Redmond, Sisters, Terrebonne, Powell Butte):
+# CEC-OR = Central Electric Cooperative (Redmond-area fringe, Sisters, Terrebonne, Powell Butte):
 #   Schedule A flat residential; energy ≈ $0.085/kWh after the +8.5% BPA-driven
 #   2025-10-01 increase; facilities charge ≈ $29/mo (exact figure is in a PDF
 #   on cec.coop — verify before relying on it).  https://cec.coop
@@ -52,10 +56,10 @@ SDG&E,TOU-DR1,summer,off_peak,21,24,0.42,16.00,2024-01
 SDG&E,TOU-DR1,winter,off_peak,0,16,0.40,16.00,2024-01
 SDG&E,TOU-DR1,winter,peak,16,21,0.47,16.00,2024-01
 SDG&E,TOU-DR1,winter,off_peak,21,24,0.40,16.00,2024-01
-PacifiCorp,Schedule 4 Residential,summer,off_peak,0,24,0.140,14.00,2026-04
-PacifiCorp,Schedule 4 Residential,winter,off_peak,0,24,0.140,14.00,2026-04
-PGE-OR,Schedule 7 Residential,summer,off_peak,0,24,0.157,13.60,2026-04
-PGE-OR,Schedule 7 Residential,winter,off_peak,0,24,0.157,13.60,2026-04
+PacifiCorp,Schedule 4 Residential,summer,off_peak,0,24,0.160,14.00,2026-04
+PacifiCorp,Schedule 4 Residential,winter,off_peak,0,24,0.160,14.00,2026-04
+PGE-OR,Schedule 7 Residential,summer,off_peak,0,24,0.190,13.00,2026-04
+PGE-OR,Schedule 7 Residential,winter,off_peak,0,24,0.190,13.00,2026-04
 CEC-OR,Schedule A Residential,summer,off_peak,0,24,0.085,29.00,2025-10
 CEC-OR,Schedule A Residential,winter,off_peak,0,24,0.085,29.00,2025-10
 Midstate-OR,Residential,summer,off_peak,0,24,0.090,35.00,2025-11

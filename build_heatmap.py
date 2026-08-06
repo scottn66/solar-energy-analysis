@@ -74,15 +74,23 @@ MUNI_ZIP3 = {"958"}
 OR_EXPORT_RATIO      = 1.0
 OR_COOP_EXPORT_RATIO = 0.90
 
-# Approximate all-in residential rates by utility class ($/kWh, 2026 tariffs):
-#   Portland General Electric (Portland metro / Salem)  ≈ $0.157 volumetric
+# Avoidable volumetric residential rates by utility class ($/kWh, Apr 2026
+# tariffs; all-in averages incl. fixed charges run ~1-2¢ higher — ≈$0.175
+# Pacific Power, ≈$0.21 PGE.  A further ~11% PacifiCorp residential increase
+# was pending at the OPUC as of mid-2026):
+#   Portland General Electric (Portland metro / Salem)  ≈ $0.190
 #   EWEB (Eugene municipal)                             ≈ $0.13
-#   Pacific Power (most of the rest, incl. Bend)        ≈ $0.140
-#   Central OR co-ops (CEC Redmond, Midstate La Pine)   ≈ $0.088 energy charge
-OR_PGE_RATE    = 0.157
+#   Pacific Power (most of the rest, incl. Bend)        ≈ $0.160
+#   Central OR co-ops (CEC Redmond-area, Midstate)      ≈ $0.088 energy charge
+OR_PGE_RATE    = 0.190
 OR_EWEB_RATE   = 0.13
-OR_PACPWR_RATE = 0.140
+OR_PACPWR_RATE = 0.160
 OR_COOP_RATE   = 0.088
+
+# Oregon residential rates rose ~7.5%/yr nominal 2020-2025 with further
+# approved/pending increases through 2027 — use a 5%/yr near-term
+# escalation for OR instead of the engine's 2.5% long-run default.
+OR_ESCALATION  = 0.05
 
 # ZIP3 prefixes dominated by PGE (Portland metro + Willamette Valley north)
 OR_PGE_ZIP3  = {"970", "971", "972", "973"}
@@ -92,11 +100,15 @@ OR_PGE_ZIP3  = {"970", "971", "972", "973"}
 OR_EWEB_ZIP5 = {"97401", "97402", "97403", "97404", "97405", "97408"}
 
 # Central Oregon electric-co-op territories at ZIP5 granularity.  The 977
-# prefix mixes Pacific Power (Bend, Prineville, Madras) with two co-ops:
-#   Central Electric Cooperative — Redmond, Sisters, Terrebonne, Powell Butte
+# prefix mixes Pacific Power (Bend, Redmond city core, Prineville, Madras)
+# with two co-ops:
+#   Central Electric Cooperative — Sisters, Terrebonne, Powell Butte, and
+#     the rural fringe around Redmond/Bend/Prineville (territories
+#     interleave street by street — CEC publishes an address-lookup
+#     provider map; Redmond 97756 is assigned to Pacific Power here
+#     because the city core's dominant residential provider is PP)
 #   Midstate Electric Cooperative — La Pine, Sunriver, Crescent, Chemult
 OR_COOP_ZIP5 = {
-    "97756": "Central Electric Co-op",   # Redmond
     "97759": "Central Electric Co-op",   # Sisters
     "97760": "Central Electric Co-op",   # Terrebonne
     "97753": "Central Electric Co-op",   # Powell Butte
@@ -313,6 +325,7 @@ def _utility_assumptions(state: str, zip5: str, zip3: str) -> tuple[Assumptions,
             return Assumptions(
                 electricity_price_override=OR_COOP_RATE,
                 nem_export_ratio=OR_COOP_EXPORT_RATIO,
+                electricity_escalation=OR_ESCALATION,
             ), OR_COOP_ZIP5[zip5]
         if zip5 in OR_EWEB_ZIP5:
             rate, label = OR_EWEB_RATE, "EWEB (muni)"
@@ -323,6 +336,7 @@ def _utility_assumptions(state: str, zip5: str, zip3: str) -> tuple[Assumptions,
         return Assumptions(
             electricity_price_override=rate,
             nem_export_ratio=OR_EXPORT_RATIO,
+            electricity_escalation=OR_ESCALATION,
         ), label
 
     # California
@@ -449,9 +463,9 @@ _CA_FOOTNOTE = (
 )
 
 _OR_FOOTNOTE = (
-    "Data: NREL PVWatts (yield), Berkeley Lab TTS ($/W, confidence), EIA (rates) · "
-    "OR: 1:1 net metering (ORS 757.300) · yield model splits at the Cascade crest · "
-    "Score = 25% resource + 50% economics + 15% site-fit + 10% policy"
+    "Data: NREL PVWatts (yield), Berkeley Lab TTS ($/W, confidence), 2026 tariffs · "
+    "OR: 1:1 net metering (ORS 757.300; co-ops net monthly) · 5%/yr escalation · "
+    "no federal ITC post-2025 · yield model splits at the Cascade crest"
 )
 
 

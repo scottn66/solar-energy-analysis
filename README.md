@@ -89,7 +89,7 @@ URDB has PG&E data from 2014 ($0.15/kWh) but the real rate is $0.38+. The stalen
 Turns a cached JSON row back into a full `QuoteResult` object tree. This is what makes the OLTP cache hit work without re-running any pipeline code.
 
 ### The economics engine: `solar_economics.score_site()`
-45-field `SiteResult` dataclass with every parameter overridable via `Assumptions`. 39 unit tests pin down the math.
+45-field `SiteResult` dataclass with every parameter overridable via `Assumptions`. 43 unit tests pin down the math.
 
 ### The report: `solar_viz.py`
 Plotly-based single-file HTML report. Hover tooltips on every metric explain what it means. Provenance section shows exactly which API each number came from.
@@ -114,7 +114,7 @@ python3 verify_system.py
 
 # Run tests
 pytest test_solar_economics.py test_integration.py test_oregon.py -v
-# Expected: 96 passed
+# Expected: 102 passed
 ```
 
 ### Usage
@@ -123,7 +123,7 @@ pytest test_solar_economics.py test_integration.py test_oregon.py -v
 # Get a quick quote on the terminal
 python3 -m solar_fetch 94061 --monthly-kwh 650
 
-# Central Oregon quote (Redmond — Central Electric Co-op territory)
+# Central Oregon quote (Redmond — Pacific Power city core; CEC serves the fringe)
 python3 -m solar_fetch 97756 --monthly-kwh 900
 
 # Generate an interactive HTML report
@@ -152,8 +152,8 @@ duckdb data/warehouse/solar.duckdb
 ## Verification & CI
 
 - **`python3 verify_system.py`** — 28 end-to-end checks across 8 phases (schema, ETL, cache, numerical equivalence, multi-location, error handling, test suite).
-- **`pytest`** — 96 automated tests (39 economics + 26 integration & warehouse + 31 Oregon-region). CI runs on every push via `.github/workflows/test.yml`.
-- **Last verified:** 28/28 verification checks + 96/96 tests passing.
+- **`pytest`** — 102 automated tests (43 economics + 26 integration & warehouse + 33 Oregon-region). CI runs on every push via `.github/workflows/test.yml`.
+- **Last verified:** 28/28 verification checks + 102/102 tests passing.
 
 ---
 
@@ -180,9 +180,9 @@ Warehouse layer (OLAP):
 
 Verification & tests:
   verify_system.py          End-to-end smoke test (28 assertions)
-  test_solar_economics.py   39 unit tests
+  test_solar_economics.py   43 unit tests
   test_integration.py       26 integration tests (warehouse + HTTP-mocked pipeline)
-  test_oregon.py            31 Oregon-region tests (rates, NEM, cities, yield model)
+  test_oregon.py            33 Oregon-region tests (rates, NEM, cities, yield model)
 
 Exploration:
   notebooks/                Jupyter EDA notebooks
@@ -203,7 +203,7 @@ Reference data:
 - **[`docs/WAREHOUSE.md`](docs/WAREHOUSE.md)** — warehouse schema, example queries, teammate workflow
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — module map, where-to-find-things, caching
 - **[`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md)** — every financial parameter with source and rationale
-- **[`docs/TESTS.md`](docs/TESTS.md)** — test suite reference (all 96 tests catalogued)
+- **[`docs/TESTS.md`](docs/TESTS.md)** — test suite reference (all 102 tests catalogued)
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — branching strategy and PR workflow
 
 ---

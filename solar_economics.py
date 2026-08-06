@@ -68,23 +68,31 @@ class Assumptions:
     system_life_years: int = 25
     """Industry-standard warranty/analysis horizon for crystalline-silicon PV."""
 
-    degradation_rate: float = 0.005
-    """0.5%/yr median from NREL long-term field studies (Jordan & Kurtz 2013)."""
+    degradation_rate: float = 0.007
+    """0.7%/yr — NREL PV Fleet national median (Jordan et al. 2022).
+    The older 0.5%/yr figure is the 2013 Jordan & Kurtz review median."""
 
     discount_rate: float = 0.06
     """Nominal WACC for residential solar; 6% blends ~5% debt + equity premium."""
 
-    om_cost_per_kw_year: float = 20.0
-    """$20/kW-yr covers inverter reserves, cleaning, monitoring (NREL ATB 2024)."""
+    om_cost_per_kw_year: float = 31.0
+    """$31/kW-yr — NREL ATB residential PV fixed O&M ($30-34/kWdc-yr, 2023-24
+    ATB).  $20/kW-yr corresponds to commercial-scale PV, not residential."""
 
-    federal_itc: float = 0.30
-    """30% Investment Tax Credit under IRA through 2032."""
+    federal_itc: float = 0.0
+    """Federal residential credit for a purchased system.  Section 25D was
+    TERMINATED for expenditures after 2025-12-31 by Pub. L. 119-21 (July
+    2025); IRS FS-2025-05 keys eligibility to installation-completion date,
+    so post-2025 installs get 0%.  Set 0.30 explicitly when modeling a
+    pre-2026 install or a third-party-owned system capturing Section 48E."""
 
     electricity_price_override: Optional[float] = None
     """If set, bypasses state lookup table.  Units: $/kWh."""
 
     electricity_escalation: float = 0.025
-    """2.5%/yr nominal rise in retail electricity (EIA AEO reference case)."""
+    """2.5%/yr nominal rise in retail electricity (long-run national
+    reference; EIA AEO implies ~2%/yr).  Recent OR/CA actuals ran 5-8%/yr
+    (2020-2025) — override regionally for near-term-sensitive analyses."""
 
     nem_export_ratio: float = 0.75
     """Fraction of retail rate credited for grid exports.
@@ -94,9 +102,10 @@ class Assumptions:
     """Fraction of annual production consumed on-site at full retail.
     Typical US residential without storage; 0.60–0.80 with battery."""
 
-    co2_intensity_tons_per_kwh: float = 0.0004
-    """US average grid carbon intensity: ~0.4 kg CO2/kWh = 0.0004 tons/kWh
-    (EPA eGRID 2022).  Override for regional marginal emission rates."""
+    co2_intensity_tons_per_kwh: float = 0.00035
+    """US average grid carbon intensity: ~0.35 kg CO2/kWh (EPA eGRID2023,
+    767 lb/MWh).  Override for regional rates — e.g. the hydro-heavy NWPP
+    subregion covering Oregon is ~0.00029 t/kWh."""
 
     default_price_per_watt: float = 3.50
     """Fallback $/W if tts_median_price_per_watt is missing.

@@ -1,6 +1,6 @@
 # Test Suite Reference
 
-**Last verified:** 96/96 passing in ~8 seconds (plus 28/28 `verify_system.py` end-to-end checks)
+**Last verified:** 102/102 passing in ~8 seconds (plus 28/28 `verify_system.py` end-to-end checks)
 
 This document describes every test in the project and what it protects against. Tests are your safety net — if you change code and a test breaks, you've probably introduced a bug.
 
@@ -53,13 +53,13 @@ Expected output: `28 passed`, exit code 0.
 
 ---
 
-## File 1: `test_solar_economics.py` — 39 tests
+## File 1: `test_solar_economics.py` — 43 tests
 
 Tests the **financial math engine** in isolation. No network calls. Runs in <1 second.
 
 ### Class: `TestSanJoseCase` — Known-good California site (13 tests)
 
-Uses real data from the San Jose sample row to verify the model produces realistic numbers.
+Uses real data from the San Jose sample row to verify the model produces realistic numbers. These tests pin the documented `VINTAGE_2025` parameter set (30% ITC, 0.5%/yr degradation, $20/kW-yr O&M) so the calibration stays meaningful now that the live defaults track post-2025 law.
 
 | Test | What it checks | Why it matters |
 |------|---------------|----------------|
@@ -130,6 +130,18 @@ A deliberately terrible site (cloudy WA, west-facing, 5° tilt at 47° latitude,
 | `test_kaggle_fallback` | Unknown state "XX" with Kaggle → uses Kaggle rate |
 | `test_national_median_fallback` | Unknown state, no Kaggle → US median $0.16 |
 
+### Class: `TestPost2025Defaults` — current-law engine defaults (4 tests)
+
+The San Jose calibration tests pin a documented `VINTAGE_2025` parameter set
+(30% ITC, 0.5%/yr degradation, $20/kW-yr O&M); these verify the live defaults.
+
+| Test | What it checks |
+|------|---------------|
+| `test_default_itc_is_zero` | Section 25D terminated post-2025 → default ITC 0% |
+| `test_default_net_cost_equals_gross` | No credit: net cost = gross cost |
+| `test_itc_loss_lengthens_payback` | Removing the ITC lengthens payback vs the 2025 vintage |
+| `test_updated_parameter_defaults` | Degradation 0.7%/yr, O&M $31/kW·yr, CO2 0.00035 t/kWh |
+
 ---
 
 ## File 2: `test_integration.py` — 26 tests
@@ -199,7 +211,7 @@ Tests the **full pipeline** with mocked HTTP so no real APIs are hit during CI. 
 
 ---
 
-## File 3: `test_oregon.py` — 31 tests
+## File 3: `test_oregon.py` — 33 tests
 
 Oregon-region coverage: bundled tariffs, NEM policy (including the Central
 Oregon co-ops), the city-report list, the batch-ETL file, and the
@@ -253,14 +265,16 @@ Cascade-aware heatmap yield model. All offline — no API keys or HTTP.
 | `test_coastal_fog_discount` | Coast ZIPs discounted vs Willamette Valley |
 | `test_california_dispatch_unchanged` | CA still uses the original latitude-only model |
 
-### Class: `TestHeatmapUtilityAssumptions` — rate/export mapping (5 tests)
+### Class: `TestHeatmapUtilityAssumptions` — rate/export mapping (7 tests)
 
 | Test | What it checks |
 |------|---------------|
-| `test_redmond_is_coop_with_reduced_export` | 97756 → Central Electric Co-op, 0.90 export ratio |
+| `test_redmond_city_is_pacific_power` | 97756 → Pacific Power (city core dominant; CEC serves the fringe) |
+| `test_sisters_is_coop_with_reduced_export` | 97759 → Central Electric Co-op, 0.90 export ratio |
 | `test_bend_is_pacific_power_full_retail` | 97701 → Pacific Power, 1:1 export |
 | `test_portland_is_pge` | 97202 → PGE |
 | `test_eweb_is_eugene_city_only` | 97401 → EWEB; Roseburg 97470 (same ZIP3) → Pacific Power |
+| `test_oregon_uses_near_term_escalation` | OR assumptions carry 5%/yr escalation |
 | `test_california_assumptions_unchanged` | CA IOU/muni assumptions untouched |
 
 ### Classes: `TestPortfolioOregon` + `TestEIAFallback` (3 tests)

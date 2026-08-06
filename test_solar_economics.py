@@ -110,7 +110,23 @@ def bad_row() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 1. Known-good California case
+# Pre-2026 parameter vintage
+# ---------------------------------------------------------------------------
+# The San Jose calibration thresholds below were built against the 30%
+# Section 25D ITC (terminated for post-2025 installs by Pub. L. 119-21) and
+# the older degradation/O&M/eGRID figures.  Pinning them keeps the
+# calibration meaningful while the engine defaults track current law —
+# see TestPost2025Defaults for the current-default behavior.
+VINTAGE_2025 = Assumptions(
+    federal_itc=0.30,
+    degradation_rate=0.005,
+    om_cost_per_kw_year=20.0,
+    co2_intensity_tons_per_kwh=0.0004,
+)
+
+
+# ---------------------------------------------------------------------------
+# 1. Known-good California case (2025-vintage parameters)
 # ---------------------------------------------------------------------------
 
 class TestSanJoseCase:
@@ -125,7 +141,7 @@ class TestSanJoseCase:
         effective rate ≈ 0.32 * (0.40 + 0.60*0.75) = 0.32 * 0.85 = $0.272/kWh
         Year-1 savings ≈ 8195 * 0.272 ≈ $2,229.  Payback ≈ 13300/2229 ≈ 5.97.
         """
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert 4.0 <= result.simple_payback_years <= 7.0, (
             f"Expected payback 4-7 years, got {result.simple_payback_years:.2f}"
         )
@@ -138,7 +154,7 @@ class TestSanJoseCase:
         Lifetime kWh ≈ 8195 * 24.25 (degradation sum) ≈ 190,700 kWh
         LCOE ≈ (13300 + 2500) / 190700 ≈ $0.083/kWh
         """
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert 0.07 <= result.lcoe <= 0.11, (
             f"Expected LCOE $0.07-$0.11, got ${result.lcoe:.4f}"
         )
@@ -150,65 +166,65 @@ class TestSanJoseCase:
         grid parity ratio <0.3), near-perfect site fit (azimuth 180°,
         tilt 20° vs lat 37°), and high policy score (36k recent installs).
         """
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.viability_score >= 75.0, (
             f"Expected viability >= 75, got {result.viability_score:.1f}"
         )
 
     def test_uses_state_electricity_rate(self, san_jose_row):
         """CA state should resolve to $0.32/kWh from the state table, not Kaggle."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.electricity_rate_used == 0.32
         assert result.rate_source == "state_table"
 
     def test_specific_yield_reasonable(self, san_jose_row):
         """8195 kWh / 5 kW = 1639 kWh/kW — should be captured accurately."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert abs(result.specific_yield - 1639.02) < 1.0
 
     def test_npv_positive(self, san_jose_row):
         """With CA rates, NPV should be solidly positive."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.npv > 0, f"Expected positive NPV, got ${result.npv:.2f}"
 
     def test_irr_not_none(self, san_jose_row):
         """IRR should converge for a standard profitable case."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.irr is not None
         assert result.irr > 0.10  # should be well above 10% for CA
 
     def test_co2_avoided(self, san_jose_row):
         """Year-1 CO2 avoided ≈ 8195 * 0.0004 ≈ 3.28 tons."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert 3.0 <= result.annual_co2_avoided_tons <= 3.5
 
     def test_production_array_length(self, san_jose_row):
         """Production array should have 25 entries (one per year)."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert len(result.year_production) == 25
         assert len(result.annual_savings) == 25
         assert len(result.cumulative_savings) == 25
 
     def test_production_degrades(self, san_jose_row):
         """Each year's production should be less than the previous."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         for i in range(1, len(result.year_production)):
             assert result.year_production[i] < result.year_production[i - 1]
 
     def test_cashflow_vector_length(self, san_jose_row):
         """Cashflow vector = [-net_cost] + 25 years of savings = 26 entries."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert len(result.cashflows) == 26
         assert result.cashflows[0] < 0  # initial outlay is negative
 
     def test_gross_cost_calculation(self, san_jose_row):
         """Gross cost = 5kW * 1000 * $3.80/W = $19,000."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.gross_cost == 19000.0
 
     def test_net_cost_with_itc(self, san_jose_row):
         """Net cost = $19,000 * (1 - 0.30) = $13,300."""
-        result = score_site(san_jose_row)
+        result = score_site(san_jose_row, VINTAGE_2025)
         assert result.net_cost == 13300.0
 
 
@@ -471,3 +487,34 @@ class TestRateResolution:
         rate, src = _resolve_electricity_rate("XX", None, override=None)
         assert rate == 0.16
         assert src == "national_median"
+
+
+# ---------------------------------------------------------------------------
+# 7. Post-2025 engine defaults
+# ---------------------------------------------------------------------------
+
+class TestPost2025Defaults:
+    """Engine defaults track current federal law and NREL/EPA data.
+
+    Section 25D was terminated for expenditures after 2025-12-31
+    (Pub. L. 119-21; IRS FS-2025-05), so the default federal_itc is 0.
+    Degradation, O&M, and CO2 intensity track NREL PV Fleet, NREL ATB
+    (residential), and EPA eGRID2023 respectively.
+    """
+
+    def test_default_itc_is_zero(self):
+        assert DEFAULTS.federal_itc == 0.0
+
+    def test_default_net_cost_equals_gross(self, san_jose_row):
+        result = score_site(san_jose_row)
+        assert result.net_cost == result.gross_cost == 19000.0
+
+    def test_itc_loss_lengthens_payback(self, san_jose_row):
+        with_itc = score_site(san_jose_row, VINTAGE_2025)
+        without = score_site(san_jose_row)
+        assert without.simple_payback_years > with_itc.simple_payback_years
+
+    def test_updated_parameter_defaults(self):
+        assert DEFAULTS.degradation_rate == pytest.approx(0.007)
+        assert DEFAULTS.om_cost_per_kw_year == pytest.approx(31.0)
+        assert DEFAULTS.co2_intensity_tons_per_kwh == pytest.approx(0.00035)

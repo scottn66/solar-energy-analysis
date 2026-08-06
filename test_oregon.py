@@ -239,9 +239,18 @@ class TestOregonYieldModel:
 
 
 class TestHeatmapUtilityAssumptions:
-    def test_redmond_is_coop_with_reduced_export(self):
-        from build_heatmap import OR_COOP_EXPORT_RATIO, _utility_assumptions
+    def test_redmond_city_is_pacific_power(self):
+        # Redmond's city core is predominantly Pacific Power; CEC serves the
+        # surrounding rural fringe (territories interleave — the ZIP-level
+        # model assigns 97756 to the dominant in-city provider).
+        from build_heatmap import _utility_assumptions
         assum, label = _utility_assumptions("OR", "97756", "977")
+        assert label == "Pacific Power"
+        assert assum.nem_export_ratio == pytest.approx(1.0)
+
+    def test_sisters_is_coop_with_reduced_export(self):
+        from build_heatmap import OR_COOP_EXPORT_RATIO, _utility_assumptions
+        assum, label = _utility_assumptions("OR", "97759", "977")
         assert "Central Electric" in label
         assert assum.nem_export_ratio == pytest.approx(OR_COOP_EXPORT_RATIO)
 
@@ -251,6 +260,11 @@ class TestHeatmapUtilityAssumptions:
         assert label == "Pacific Power"
         assert assum.electricity_price_override == pytest.approx(OR_PACPWR_RATE)
         assert assum.nem_export_ratio == pytest.approx(1.0)
+
+    def test_oregon_uses_near_term_escalation(self):
+        from build_heatmap import OR_ESCALATION, _utility_assumptions
+        assum, _label = _utility_assumptions("OR", "97701", "977")
+        assert assum.electricity_escalation == pytest.approx(OR_ESCALATION)
 
     def test_portland_is_pge(self):
         from build_heatmap import _utility_assumptions
