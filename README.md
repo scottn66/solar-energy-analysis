@@ -59,10 +59,10 @@ The project separates *transactional* work (one quote at a time, served fast) fr
 ## 3 · Scope
 
 ### In scope
-- **Geographies:** any US address or 5-digit ZIP code.
+- **Geographies:** any US address or 5-digit ZIP code. Two regions get first-class treatment with bundled current tariffs, city reports, and ZIP heatmaps: **California** and **Oregon** (including the Central Oregon high desert around Bend/Redmond).
 - **System sizing:** user-specified kW, bill-sized from monthly kWh, or default 5 kW.
-- **Rate data:** URDB (with staleness detection → bundled TOU schedule for PG&E/SCE/SDG&E → EIA state average → US median).
-- **NEM policies:** California NEM 3.0 avoided-cost, 1:1 net metering for 23 states, reduced/deregulated fallbacks.
+- **Rate data:** URDB (with staleness detection → bundled schedule for PG&E/SCE/SDG&E and the Oregon utilities Pacific Power, Portland General Electric, Central Electric Co-op, Midstate Electric Co-op → EIA state average → US median).
+- **NEM policies:** California NEM 3.0 avoided-cost, 1:1 net metering for 23 states (incl. Oregon per ORS 757.300), Oregon co-op monthly netting, reduced/deregulated fallbacks.
 - **Financial model:** 25-year cashflow with degradation, escalation, ITC, O&M, NEM export; produces LCOE, payback, NPV, IRR, viability score.
 
 ### Out of scope (deliberately)
@@ -82,8 +82,8 @@ The single entry point that ties every data source to the economics model. Any c
 ### The warehouse: `solar_warehouse.py` + `solar.duckdb`
 Five `raw_*` staging tables with full JSON response history. Two tables you'll actually query (`raw_quote`, `raw_eia`); three audit tables you won't (`raw_pvwatts`, `raw_urdb`, `raw_geocode`). See [`docs/WAREHOUSE.md`](docs/WAREHOUSE.md).
 
-### The rate staleness guard: `solar_urdb.get_rate()` + bundled TOU
-URDB has PG&E data from 2014 ($0.15/kWh) but the real rate is $0.38+. The staleness detector catches this and swaps in a bundled current TOU schedule. Without this fix every CA quote scored "marginal" instead of "excellent" — with it, scores match reality.
+### The rate staleness guard: `solar_urdb.get_rate()` + bundled schedules
+URDB has PG&E data from 2014 ($0.15/kWh) but the real rate is $0.38+. The staleness detector catches this and swaps in a bundled current rate schedule — TOU for the CA IOUs, flat 2025/2026 tariffs for the Oregon utilities (Pacific Power, Portland General Electric, and the Central Oregon co-ops). Without this fix every CA quote scored "marginal" instead of "excellent" — with it, scores match reality.
 
 ### The rehydrator: `solar_warehouse.quote_from_dict()`
 Turns a cached JSON row back into a full `QuoteResult` object tree. This is what makes the OLTP cache hit work without re-running any pipeline code.
@@ -113,8 +113,8 @@ python3 verify_system.py
 # Expected: 28/28 passed
 
 # Run tests
-pytest test_solar_economics.py test_integration.py -v
-# Expected: 64 passed
+pytest test_solar_economics.py test_integration.py test_oregon.py -v
+# Expected: 96 passed
 ```
 
 ### Usage
@@ -123,11 +123,17 @@ pytest test_solar_economics.py test_integration.py -v
 # Get a quick quote on the terminal
 python3 -m solar_fetch 94061 --monthly-kwh 650
 
+# Central Oregon quote (Redmond — Central Electric Co-op territory)
+python3 -m solar_fetch 97756 --monthly-kwh 900
+
 # Generate an interactive HTML report
 python3 -m solar_fetch 94061 --monthly-kwh 650 --output report.html
 
 # Add a quote to the warehouse (the OLAP/ETL path)
 python3 solar_etl.py --location 94061 --monthly-kwh 650
+
+# Populate the warehouse for the whole Oregon region in one command
+python3 solar_etl.py --batch data/oregon_locations.csv
 
 # Check warehouse contents
 python3 solar_etl.py --status
@@ -146,8 +152,8 @@ duckdb data/warehouse/solar.duckdb
 ## Verification & CI
 
 - **`python3 verify_system.py`** — 28 end-to-end checks across 8 phases (schema, ETL, cache, numerical equivalence, multi-location, error handling, test suite).
-- **`pytest`** — 64 automated tests (39 economics + 25 integration & warehouse). CI runs on every push via `.github/workflows/test.yml`.
-- **Last verified:** 28/28 verification checks + 64/64 tests passing.
+- **`pytest`** — 96 automated tests (39 economics + 26 integration & warehouse + 31 Oregon-region). CI runs on every push via `.github/workflows/test.yml`.
+- **Last verified:** 28/28 verification checks + 96/96 tests passing.
 
 ---
 
@@ -175,7 +181,8 @@ Warehouse layer (OLAP):
 Verification & tests:
   verify_system.py          End-to-end smoke test (28 assertions)
   test_solar_economics.py   39 unit tests
-  test_integration.py       25 integration tests (warehouse + HTTP-mocked pipeline)
+  test_integration.py       26 integration tests (warehouse + HTTP-mocked pipeline)
+  test_oregon.py            31 Oregon-region tests (rates, NEM, cities, yield model)
 
 Exploration:
   notebooks/                Jupyter EDA notebooks
@@ -185,7 +192,8 @@ Reference data:
   data/uszips.csv           US ZIP code coordinates
   data/eia_state_rates_2025.csv   Bundled state electricity prices
   data/nem3_acc_2025.csv          CA NEM 3.0 export rate schedule
-  data/utility_tou_schedules.csv  Bundled TOU rates for CA IOUs
+  data/utility_tou_schedules.csv  Bundled rate schedules (CA IOUs + OR utilities)
+  data/oregon_locations.csv       Curated Oregon batch for solar_etl.py --batch
 ```
 
 ---
@@ -195,7 +203,7 @@ Reference data:
 - **[`docs/WAREHOUSE.md`](docs/WAREHOUSE.md)** — warehouse schema, example queries, teammate workflow
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — module map, where-to-find-things, caching
 - **[`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md)** — every financial parameter with source and rationale
-- **[`docs/TESTS.md`](docs/TESTS.md)** — test suite reference (all 64 tests catalogued)
+- **[`docs/TESTS.md`](docs/TESTS.md)** — test suite reference (all 96 tests catalogued)
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — branching strategy and PR workflow
 
 ---

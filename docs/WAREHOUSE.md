@@ -46,6 +46,31 @@ python3 solar_etl.py --location 94061 --monthly-kwh 650
 duckdb data/warehouse/solar.duckdb
 ```
 
+## Populating a whole region at once
+
+`--batch` runs the full pipeline for every row of a location CSV and stages
+each result — one command to give the warehouse regional coverage. A curated
+Oregon file ships in the repo (Central-Oregon-heavy: Bend, Redmond, Sisters,
+La Pine, Sunriver, Prineville, Madras, Terrebonne + statewide anchors):
+
+```bash
+# Needs API keys, ~1-2s per location; failing rows are skipped, not fatal
+python3 solar_etl.py --batch data/oregon_locations.csv
+```
+
+Then compare the region in SQL:
+
+```sql
+SELECT location_query, viability_score, payback_years,
+       utility_name, electricity_rate_used, export_policy
+FROM raw_quote
+WHERE state = 'OR'
+ORDER BY viability_score DESC;
+```
+
+To batch a different region, copy the CSV format: `location` (ZIP or
+"City, ST"), optional `monthly_kwh` / `system_kw`, and a free-text `note`.
+
 Or from Python:
 ```python
 from solar_warehouse import get_conn

@@ -312,15 +312,21 @@ def _load_eia_state_rates() -> dict[str, float]:
     return rates
 
 
-def _load_bundled_tou(utility_name: str) -> RateResult | None:
-    """Load a bundled TOU rate schedule for a known utility.
+def _load_bundled_tou(utility_name: str, state: str | None = None) -> RateResult | None:
+    """Load a bundled rate schedule for a known utility.
 
     Falls back to bundled data/utility_tou_schedules.csv when the URDB has
-    stale rates.  Currently covers PG&E, SCE, and SDG&E — the three CA IOUs.
+    stale rates.  Covers the three CA IOUs (PG&E, SCE, SDG&E) and the four
+    utilities serving Oregon — Portland General Electric, Pacific Power
+    (PacifiCorp), Central Electric Cooperative, and Midstate Electric
+    Cooperative (the latter two serve Central Oregon around Redmond,
+    Sisters, La Pine, and Sunriver).
 
     The bundled file contains peak/off-peak rates by season.  This function
-    expands them into a full 8760-hour rate vector using a standard calendar
-    (2024 as reference, summer = Jun-Sep, winter = Oct-May).
+    expands them into a full 8760-hour rate vector (summer = Jun-Sep,
+    winter = Oct-May).  Schedules with a single year-round price (the
+    Oregon default tariffs are flat, unlike California's default-TOU) are
+    returned with ``is_tou=False`` and no hourly vector.
 
     Returns None if the utility isn't in the bundled file.
     """
@@ -328,15 +334,37 @@ def _load_bundled_tou(utility_name: str) -> RateResult | None:
     if not csv_path.exists():
         return None
 
-    # Normalize utility name for matching
+    # Normalize utility name for matching.  "Portland General" must be
+    # checked before the PG&E patterns — Oregon's PGE is a different company
+    # from California's PG&E.
     name_lower = utility_name.lower()
+    state_upper = (state or "").strip().upper()
     utility_key = None
-    if "pacific gas" in name_lower or "pg&e" in name_lower or "pg+e" in name_lower:
+    if "portland general" in name_lower:
+        utility_key = "PGE-OR"
+    elif "pacific gas" in name_lower or "pg&e" in name_lower or "pg+e" in name_lower:
         utility_key = "PG&E"
     elif "southern california edison" in name_lower or "sce" in name_lower:
         utility_key = "SCE"
     elif "san diego" in name_lower or "sdge" in name_lower or "sdg&e" in name_lower:
         utility_key = "SDG&E"
+    elif "pacific power" in name_lower and state_upper in ("", "OR"):
+        # Pacific Power is PacifiCorp's brand in OR, WA, and far-northern
+        # CA (URDB uses names like "Pacific Power (California)"), and the
+        # bundled schedule is Oregon's — gate it to Oregon quotes.
+        utility_key = "PacifiCorp"
+    elif "pacificorp" in name_lower:
+        # Bare "PacifiCorp" also covers Rocky Mountain Power (UT/WY/ID),
+        # whose rates differ — only apply the Oregon schedule when the
+        # quote is actually in Oregon.
+        if state_upper in ("", "OR"):
+            utility_key = "PacifiCorp"
+    elif "central electric" in name_lower and state_upper in ("", "OR"):
+        utility_key = "CEC-OR"
+    elif (
+        "midstate electric" in name_lower or "mid-state electric" in name_lower
+    ) and state_upper in ("", "OR"):
+        utility_key = "Midstate-OR"
 
     if utility_key is None:
         return None
@@ -345,6 +373,7 @@ def _load_bundled_tou(utility_name: str) -> RateResult | None:
     rows_by_season: dict[str, list[dict]] = {"summer": [], "winter": []}
     rate_name = ""
     fixed_monthly = 0.0
+    effective = date(2024, 1, 1)
     with open(csv_path, newline="", encoding="utf-8") as fh:
         lines = (line for line in fh if not line.startswith("#"))
         reader = csv.DictReader(lines)
@@ -352,6 +381,13 @@ def _load_bundled_tou(utility_name: str) -> RateResult | None:
             if row.get("utility", "").strip() == utility_key:
                 rate_name = row.get("rate_name", "")
                 fixed_monthly = float(row.get("fixed_monthly", 0))
+                eff_raw = (row.get("effective") or "").strip()
+                if eff_raw:
+                    try:
+                        parts = eff_raw.split("-")
+                        effective = date(int(parts[0]), int(parts[1]) if len(parts) > 1 else 1, 1)
+                    except (ValueError, IndexError):
+                        pass
                 season = row.get("season", "").strip().lower()
                 if season in rows_by_season:
                     rows_by_season[season].append({
@@ -385,22 +421,27 @@ def _load_bundled_tou(utility_name: str) -> RateResult | None:
 
     flat_avg = float(np.mean(hourly_rates))
 
+    # A schedule whose price never varies by hour (the Oregon default
+    # tariffs, unlike California's default-TOU) is a flat rate, not TOU.
+    is_flat = bool(np.max(hourly_rates) == np.min(hourly_rates))
+
     logger.info(
-        "Loaded bundled TOU schedule: %s %s (avg $%.4f/kWh, peak $%.4f, off-peak $%.4f)",
+        "Loaded bundled %s schedule: %s %s (avg $%.4f/kWh, peak $%.4f, off-peak $%.4f)",
+        "flat" if is_flat else "TOU",
         utility_key, rate_name, flat_avg,
         float(np.max(hourly_rates)), float(np.min(hourly_rates[hourly_rates > 0])),
     )
 
     return RateResult(
         flat_rate=flat_avg,
-        hourly_rates=hourly_rates,
+        hourly_rates=None if is_flat else hourly_rates,
         fixed_monthly_charge=fixed_monthly,
         utility_name=utility_name,
-        rate_name=f"{rate_name} (bundled 2024 schedule)",
+        rate_name=f"{rate_name} (bundled {effective.year} schedule)",
         rate_uri="",
         source="bundled_tou",
-        effective_date=date(2024, 1, 1),
-        is_tou=True,
+        effective_date=effective,
+        is_tou=not is_flat,
         is_tiered=False,
         raw={},
     )
@@ -747,7 +788,7 @@ def get_rate(
                         eia_source, eia_rate, eia_period,
                     )
                     # Try bundled TOU first — preserves peak/off-peak structure
-                    bundled = _load_bundled_tou(urdb_result.utility_name)
+                    bundled = _load_bundled_tou(urdb_result.utility_name, state=state)
                     if bundled is not None:
                         logger.info(
                             "Using bundled TOU schedule for %s ($%.4f avg)",

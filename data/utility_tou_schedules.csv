@@ -1,30 +1,62 @@
-# Bundled TOU rate schedules for major CA utilities
+# Bundled rate schedules for major CA and OR utilities
 # Source: Utility tariff books (published rate schedules)
+#
+# California (default-TOU residential service):
 # PG&E: https://www.pge.com/tariffs/electric.shtml (E-TOU-C, effective 2024)
 # SCE:  https://www.sce.com/residential/rates (TOU-D-4-9PM, effective 2024)
 # SDG&E: https://www.sdge.com/residential/pricing-plans (TOU-DR1, effective 2024)
-# Snapshot date: 2025-03
+#
+# Oregon (default residential service is FLAT, not TOU — flat schedules are
+# encoded as a single 0-24h off_peak row per season; the loader detects the
+# constant price and reports is_tou=False):
+# PacifiCorp = Pacific Power (Bend, Prineville, Madras, Medford, Klamath Falls):
+#   Schedule 4 residential, all-in avg incl. delivery/supply/riders ≈ $0.140/kWh
+#   after the +2.9% 2026-04-01 adjustment; basic charge ≈ $14.00/mo.
+#   https://www.pacificpower.net/about/rates-regulation/oregon-rates-tariffs.html
+#   (Opt-in TOU exists — Schedule 29, on-peak 5-9pm ~$0.28 — not the default.)
+# PGE-OR = Portland General Electric (Portland metro, Salem — NOT CA's PG&E):
+#   Schedule 7 residential, volumetric all-in ≈ $0.157/kWh (incl. Sch 125
+#   power-cost update); basic $13.00 + $0.60 low-income assistance = $13.60/mo.
+#   https://portlandgeneral.com/about/info/rates-and-regulatory
+#   (Opt-in Time of Day exists — on-peak 5-9pm weekdays ~$0.43 — not the default.)
+# CEC-OR = Central Electric Cooperative (Redmond, Sisters, Terrebonne, Powell Butte):
+#   Schedule A flat residential; energy ≈ $0.085/kWh after the +8.5% BPA-driven
+#   2025-10-01 increase; facilities charge ≈ $29/mo (exact figure is in a PDF
+#   on cec.coop — verify before relying on it).  https://cec.coop
+# Midstate-OR = Midstate Electric Cooperative (La Pine, Sunriver, Crescent):
+#   Residential energy ≈ $0.090/kWh after the 2025-11-01 adjustment;
+#   facilities charge $35.00/mo.  https://midstateelectric.coop
+#
+# Snapshot date: 2026-08
 # TODO: Refresh annually from published tariff PDFs
 # NOTE: Rates include all charges (generation, transmission, distribution).
 #       Actual bills vary by baseline territory, usage tier, and CARE/FERA discounts.
 #
-# Columns: utility, rate_name, season, period, start_hour, end_hour, rate_dollars_per_kwh, fixed_monthly
-utility,rate_name,season,period,start_hour,end_hour,rate_dollars_per_kwh,fixed_monthly
-PG&E,E-TOU-C,summer,off_peak,0,16,0.38,10.50
-PG&E,E-TOU-C,summer,peak,16,21,0.54,10.50
-PG&E,E-TOU-C,summer,off_peak,21,24,0.38,10.50
-PG&E,E-TOU-C,winter,off_peak,0,16,0.37,10.50
-PG&E,E-TOU-C,winter,peak,16,21,0.40,10.50
-PG&E,E-TOU-C,winter,off_peak,21,24,0.37,10.50
-SCE,TOU-D-4-9PM,summer,off_peak,0,16,0.36,12.00
-SCE,TOU-D-4-9PM,summer,peak,16,21,0.56,12.00
-SCE,TOU-D-4-9PM,summer,off_peak,21,24,0.36,12.00
-SCE,TOU-D-4-9PM,winter,off_peak,0,16,0.36,12.00
-SCE,TOU-D-4-9PM,winter,peak,16,21,0.43,12.00
-SCE,TOU-D-4-9PM,winter,off_peak,21,24,0.36,12.00
-SDG&E,TOU-DR1,summer,off_peak,0,16,0.42,16.00
-SDG&E,TOU-DR1,summer,peak,16,21,0.65,16.00
-SDG&E,TOU-DR1,summer,off_peak,21,24,0.42,16.00
-SDG&E,TOU-DR1,winter,off_peak,0,16,0.40,16.00
-SDG&E,TOU-DR1,winter,peak,16,21,0.47,16.00
-SDG&E,TOU-DR1,winter,off_peak,21,24,0.40,16.00
+# Columns: utility, rate_name, season, period, start_hour, end_hour, rate_dollars_per_kwh, fixed_monthly, effective
+utility,rate_name,season,period,start_hour,end_hour,rate_dollars_per_kwh,fixed_monthly,effective
+PG&E,E-TOU-C,summer,off_peak,0,16,0.38,10.50,2024-01
+PG&E,E-TOU-C,summer,peak,16,21,0.54,10.50,2024-01
+PG&E,E-TOU-C,summer,off_peak,21,24,0.38,10.50,2024-01
+PG&E,E-TOU-C,winter,off_peak,0,16,0.37,10.50,2024-01
+PG&E,E-TOU-C,winter,peak,16,21,0.40,10.50,2024-01
+PG&E,E-TOU-C,winter,off_peak,21,24,0.37,10.50,2024-01
+SCE,TOU-D-4-9PM,summer,off_peak,0,16,0.36,12.00,2024-01
+SCE,TOU-D-4-9PM,summer,peak,16,21,0.56,12.00,2024-01
+SCE,TOU-D-4-9PM,summer,off_peak,21,24,0.36,12.00,2024-01
+SCE,TOU-D-4-9PM,winter,off_peak,0,16,0.36,12.00,2024-01
+SCE,TOU-D-4-9PM,winter,peak,16,21,0.43,12.00,2024-01
+SCE,TOU-D-4-9PM,winter,off_peak,21,24,0.36,12.00,2024-01
+SDG&E,TOU-DR1,summer,off_peak,0,16,0.42,16.00,2024-01
+SDG&E,TOU-DR1,summer,peak,16,21,0.65,16.00,2024-01
+SDG&E,TOU-DR1,summer,off_peak,21,24,0.42,16.00,2024-01
+SDG&E,TOU-DR1,winter,off_peak,0,16,0.40,16.00,2024-01
+SDG&E,TOU-DR1,winter,peak,16,21,0.47,16.00,2024-01
+SDG&E,TOU-DR1,winter,off_peak,21,24,0.40,16.00,2024-01
+PacifiCorp,Schedule 4 Residential,summer,off_peak,0,24,0.140,14.00,2026-04
+PacifiCorp,Schedule 4 Residential,winter,off_peak,0,24,0.140,14.00,2026-04
+PGE-OR,Schedule 7 Residential,summer,off_peak,0,24,0.157,13.60,2026-04
+PGE-OR,Schedule 7 Residential,winter,off_peak,0,24,0.157,13.60,2026-04
+CEC-OR,Schedule A Residential,summer,off_peak,0,24,0.085,29.00,2025-10
+CEC-OR,Schedule A Residential,winter,off_peak,0,24,0.085,29.00,2025-10
+Midstate-OR,Residential,summer,off_peak,0,24,0.090,35.00,2025-11
+Midstate-OR,Residential,winter,off_peak,0,24,0.090,35.00,2025-11

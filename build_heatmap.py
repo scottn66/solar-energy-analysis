@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-build_heatmap.py — Score all ~2,593 CA ZIPs and generate two interactive
-Plotly heatmaps for static GitHub Pages deployment:
+build_heatmap.py — Score every ZIP in a state and generate interactive
+Plotly heatmaps for static GitHub Pages deployment.
 
-  heatmap_ca.html      — Statewide California (initial view: Bay Area)
-  heatmap_norcal.html  — NorCal / Bay Area focus
+California (~2,593 ZIPs):
+  heatmap_ca.html          — Statewide California (initial view: Bay Area)
+  heatmap_norcal.html      — NorCal / Bay Area focus
+
+Oregon (~417 ZIPs):
+  heatmap_or.html          — Statewide Oregon
+  heatmap_central_or.html  — Central Oregon focus (Bend · Redmond ·
+                             Deschutes / Jefferson / Crook counties)
 
 Color   = viability score (0–100, Viridis colorscale)
 Opacity = confidence tier based on ZIP3-level TTS sample size:
@@ -12,9 +18,14 @@ Opacity = confidence tier based on ZIP3-level TTS sample size:
   Medium (ZIP3  5–29 installs): opacity 0.55 — dimmed
   NA     (ZIP3  <5  installs):  gray,  opacity 0.30 — no score shown
 
+If the DuckDB warehouse (or its raw_tts_installations table) is missing,
+the maps are still built — every ZIP just falls into the gray NA tier and
+a warning explains how to load the TTS data.
+
 Usage:
-    python3 build_heatmap.py
-    # Outputs: heatmap_ca.html, heatmap_norcal.html
+    python3 build_heatmap.py        # California maps (default)
+    python3 build_heatmap.py or     # Oregon maps
+    python3 build_heatmap.py all    # both states
 """
 
 from __future__ import annotations
@@ -55,8 +66,49 @@ MUNI_EXPORT_RATIO = 0.50   # NEM 2.0-equivalent (full retail)
 # LADWP covers parts of 900-904 but mixed with SCE — omitted for simplicity
 MUNI_ZIP3 = {"958"}
 
+# ── Oregon assumptions ────────────────────────────────────────────────────────
+# Oregon's PUC-regulated utilities (PGE, Pacific Power) offer 1:1 retail-rate
+# net metering (ORS 757.300) → export ratio 1.0.  The Central Oregon co-ops
+# net monthly but cash out surplus at wholesale (~$0.05/kWh), so their
+# effective export value is ~90% of retail for a load-sized system.
+OR_EXPORT_RATIO      = 1.0
+OR_COOP_EXPORT_RATIO = 0.90
+
+# Approximate all-in residential rates by utility class ($/kWh, 2026 tariffs):
+#   Portland General Electric (Portland metro / Salem)  ≈ $0.157 volumetric
+#   EWEB (Eugene municipal)                             ≈ $0.13
+#   Pacific Power (most of the rest, incl. Bend)        ≈ $0.140
+#   Central OR co-ops (CEC Redmond, Midstate La Pine)   ≈ $0.088 energy charge
+OR_PGE_RATE    = 0.157
+OR_EWEB_RATE   = 0.13
+OR_PACPWR_RATE = 0.140
+OR_COOP_RATE   = 0.088
+
+# ZIP3 prefixes dominated by PGE (Portland metro + Willamette Valley north)
+OR_PGE_ZIP3  = {"970", "971", "972", "973"}
+# Eugene Water & Electric Board (municipal) — city of Eugene ZIP5s only.
+# The rest of the 974 prefix (Roseburg, Coos Bay, the south coast) is
+# mostly Pacific Power territory with pockets of small PUDs/co-ops.
+OR_EWEB_ZIP5 = {"97401", "97402", "97403", "97404", "97405", "97408"}
+
+# Central Oregon electric-co-op territories at ZIP5 granularity.  The 977
+# prefix mixes Pacific Power (Bend, Prineville, Madras) with two co-ops:
+#   Central Electric Cooperative — Redmond, Sisters, Terrebonne, Powell Butte
+#   Midstate Electric Cooperative — La Pine, Sunriver, Crescent, Chemult
+OR_COOP_ZIP5 = {
+    "97756": "Central Electric Co-op",   # Redmond
+    "97759": "Central Electric Co-op",   # Sisters
+    "97760": "Central Electric Co-op",   # Terrebonne
+    "97753": "Central Electric Co-op",   # Powell Butte
+    "97707": "Midstate Electric Co-op",  # Sunriver / Bend south
+    "97739": "Midstate Electric Co-op",  # La Pine
+    "97733": "Midstate Electric Co-op",  # Crescent
+    "97737": "Midstate Electric Co-op",  # Gilchrist
+    "97731": "Midstate Electric Co-op",  # Chemult
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
-# NorCal county filter
+# Regional county filters
 # ──────────────────────────────────────────────────────────────────────────────
 NORCAL_COUNTIES = {
     "City and County of San Francisco",  # SF's full county name in GeoNames data
@@ -74,6 +126,13 @@ NORCAL_COUNTIES = {
     "El Dorado",
     "San Joaquin",   # Stockton/Lodi area
     "Santa Cruz",
+}
+
+# Central Oregon — the Bend/Redmond high-desert tri-county area
+CENTRAL_OR_COUNTIES = {
+    "Deschutes",   # Bend, Redmond, Sisters, La Pine, Sunriver, Terrebonne
+    "Jefferson",   # Madras, Culver
+    "Crook",       # Prineville, Powell Butte
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -130,19 +189,83 @@ def lat_to_specific_yield(lat: float) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Oregon yield model — Cascade rain shadow, not just latitude
+#
+# Latitude alone fails in Oregon: the Cascades split the state into a cloudy
+# marine west side and a sunny high-desert east side.  Bend (44.1°N, east)
+# out-produces Portland (45.5°N, west) by ~25% despite being only 1.4° south.
+# Two anchor sets, selected by longitude relative to the Cascade crest
+# (~121.8–122.0°W); anchors calibrated to NREL PVWatts (south-facing,
+# latitude tilt, 14% losses).
+# ──────────────────────────────────────────────────────────────────────────────
+_OR_CASCADE_CREST_LON = -122.0
+
+_OR_WEST_ANCHORS = [   # marine / Willamette Valley / Rogue Valley
+    (42.0, 1425),      # Ashland / Medford (Rogue Valley — driest west-side pocket)
+    (43.2, 1350),      # Roseburg / Umpqua Valley
+    (44.1, 1250),      # Eugene
+    (45.0, 1220),      # Salem
+    (45.6, 1200),      # Portland
+    (46.2, 1120),      # Astoria / lower Columbia
+]
+
+_OR_EAST_ANCHORS = [   # high desert east of the Cascades
+    (42.0, 1600),      # Klamath Falls / Lakeview
+    (43.5, 1540),      # Chemult / Christmas Valley
+    (44.2, 1500),      # Bend / Redmond / Prineville
+    (45.0, 1440),      # Madras north / Warm Springs
+    (45.8, 1380),      # Pendleton / Columbia Plateau
+]
+
+_OR_COAST_LON  = -123.85   # west of this ≈ coastal fog belt
+_OR_COAST_MULT = 0.93
+
+
+def _interp_anchors(lat: float, anchors: list[tuple[float, float]]) -> float:
+    if lat <= anchors[0][0]:
+        return float(anchors[0][1])
+    if lat >= anchors[-1][0]:
+        return float(anchors[-1][1])
+    for (la0, y0), (la1, y1) in zip(anchors, anchors[1:]):
+        if la0 <= lat <= la1:
+            t = (lat - la0) / (la1 - la0)
+            return float(y0 + t * (y1 - y0))
+    return 1300.0
+
+
+def or_specific_yield(lat: float, lon: float) -> float:
+    """Oregon latitude+longitude → specific yield (kWh/kW/yr)."""
+    if lon >= _OR_CASCADE_CREST_LON:
+        return _interp_anchors(lat, _OR_EAST_ANCHORS)
+    y = _interp_anchors(lat, _OR_WEST_ANCHORS)
+    if lon <= _OR_COAST_LON:
+        y *= _OR_COAST_MULT
+    return y
+
+
+def specific_yield_for(state: str, lat: float, lon: float) -> float:
+    """Dispatch to the state-appropriate yield model."""
+    if state == "OR":
+        return or_specific_yield(lat, lon)
+    return lat_to_specific_yield(lat)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Data loading
 # ──────────────────────────────────────────────────────────────────────────────
 
-def load_ca_zips() -> pd.DataFrame:
-    """Load 2,593 CA ZIPs from uszips.csv, add zip3 column."""
+def load_state_zips(state: str) -> pd.DataFrame:
+    """Load one state's ZIPs from uszips.csv, add zip3 column."""
     df = pd.read_csv(USZIPS_PATH, comment="#", dtype={"zip": str})
-    ca = df[df.state_id == "CA"].copy()
-    ca["zip"] = ca["zip"].str.zfill(5)
-    ca["zip3"] = ca["zip"].str[:3]
-    return ca.reset_index(drop=True)
+    sub = df[df.state_id == state].copy()
+    sub["zip"] = sub["zip"].str.zfill(5)
+    sub["zip3"] = sub["zip"].str[:3]
+    return sub.reset_index(drop=True)
 
 
-def load_zip3_tts(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, float]]:
+def load_zip3_tts(
+    con: duckdb.DuckDBPyConnection, state: str
+) -> dict[str, tuple[int, float]]:
     """Return dict: zip3 → (install_count, median_price_per_watt)."""
     rows = con.execute("""
         SELECT
@@ -150,53 +273,98 @@ def load_zip3_tts(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, float]
             COUNT(*)                          AS n,
             ROUND(MEDIAN(price_per_watt), 2) AS med_ppw
         FROM raw_tts_installations
-        WHERE state = 'CA'
+        WHERE state = ?
           AND price_per_watt BETWEEN 1.0 AND 15.0
         GROUP BY zip3
-    """).fetchall()
+    """, [state]).fetchall()
     return {z3: (int(n), float(ppw)) for z3, n, ppw in rows}
+
+
+def try_load_zip3_tts(state: str) -> dict[str, tuple[int, float]]:
+    """Load ZIP3 TTS sample sizes; empty dict (all-NA tiers) if unavailable."""
+    try:
+        con = duckdb.connect(WAREHOUSE_PATH, read_only=True)
+        tts_map = load_zip3_tts(con, state)
+        con.close()
+        return tts_map
+    except Exception as exc:
+        print("      " + "!" * 56)
+        print(f"      WARNING: warehouse unavailable ({exc}).")
+        print("      Maps will still be generated, but EVERY ZIP will render")
+        print("      gray ('insufficient data') — no confidence tiers.")
+        print("      To fix: python3 solar_etl.py --load-tts data/tts_cleaned.csv")
+        print("      " + "!" * 56)
+        return {}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scoring loop
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Default $/W when the ZIP3 TTS sample is too small (LBL TTS 2024 medians)
+STATE_DEFAULT_PPW = {"CA": 3.80, "OR": 3.40}
+
+
+def _utility_assumptions(state: str, zip5: str, zip3: str) -> tuple[Assumptions, str]:
+    """Pick (Assumptions, utility_label) for a ZIP based on its utility."""
+    if state == "OR":
+        if zip5 in OR_COOP_ZIP5:
+            # Co-ops: cheap BPA power, but monthly netting w/ wholesale cash-out
+            return Assumptions(
+                electricity_price_override=OR_COOP_RATE,
+                nem_export_ratio=OR_COOP_EXPORT_RATIO,
+            ), OR_COOP_ZIP5[zip5]
+        if zip5 in OR_EWEB_ZIP5:
+            rate, label = OR_EWEB_RATE, "EWEB (muni)"
+        elif zip3 in OR_PGE_ZIP3:
+            rate, label = OR_PGE_RATE, "PGE"
+        else:
+            rate, label = OR_PACPWR_RATE, "Pacific Power"
+        return Assumptions(
+            electricity_price_override=rate,
+            nem_export_ratio=OR_EXPORT_RATIO,
+        ), label
+
+    # California
+    if zip3 in MUNI_ZIP3:
+        return Assumptions(
+            electricity_price_override=MUNI_ELEC_RATE,
+            nem_export_ratio=MUNI_EXPORT_RATIO,
+        ), "Muni"
+    return Assumptions(
+        electricity_price_override=IOU_ELEC_RATE,
+        nem_export_ratio=IOU_EXPORT_RATIO,
+    ), "IOU (NEM 3.0)"
+
+
 def score_all_zips(
     zips: pd.DataFrame,
     tts_map: dict[str, tuple[int, float]],
+    state: str = "CA",
 ) -> pd.DataFrame:
     """
-    Score every CA ZIP using score_site() and return a DataFrame with
+    Score every ZIP in *zips* using score_site() and return a DataFrame with
     all fields needed for the map.
     """
     records = []
     errors  = 0
+    default_ppw = STATE_DEFAULT_PPW.get(state, 3.50)
 
     for row in zips.itertuples(index=False):
         z3 = row.zip3
         tts_n, tts_ppw = tts_map.get(z3, (0, 3.50))
 
         # Utility type → different electricity rate / export assumptions
-        is_muni = z3 in MUNI_ZIP3
-        if is_muni:
-            assum = Assumptions(
-                electricity_price_override=MUNI_ELEC_RATE,
-                nem_export_ratio=MUNI_EXPORT_RATIO,
-            )
-        else:
-            assum = Assumptions(
-                electricity_price_override=IOU_ELEC_RATE,
-                nem_export_ratio=IOU_EXPORT_RATIO,
-            )
+        assum, utility_label = _utility_assumptions(state, row.zip, z3)
 
-        # Specific yield from latitude; annual kWh for modeled system
-        sy         = lat_to_specific_yield(row.lat)
+        # Specific yield from location; annual kWh for modeled system
+        sy         = specific_yield_for(state, row.lat, row.lng)
         annual_kwh = sy * SYSTEM_KW
 
         site_row = {
             "site_id":                    row.zip,
-            "state":                      "CA",
-            "address_label":              f"{row.city}, CA {row.zip}",
+            "state":                      state,
+            "address_label":              f"{row.city}, {state} {row.zip}",
             "system_capacity_kw":         SYSTEM_KW,
             "pvwatts_ac_annual_kwh":      annual_kwh,
             "pvwatts_capacity_factor":    sy / 8760.0,
@@ -205,7 +373,7 @@ def score_all_zips(
             "azimuth":                    180.0,     # true south
             "losses":                     14.0,      # PVWatts default
             # Use TTS median $/W if sample size ≥ 5; otherwise state default
-            "tts_median_price_per_watt":  tts_ppw if tts_n >= 5 else 3.80,
+            "tts_median_price_per_watt":  tts_ppw if tts_n >= 5 else default_ppw,
             "tts_recent_sample_size":     float(tts_n),
         }
 
@@ -215,13 +383,13 @@ def score_all_zips(
             records.append({
                 "zip":           row.zip,
                 "city":          row.city,
+                "state":         state,
                 "county":        getattr(row, "county", ""),
                 "lat":           row.lat,
                 "lng":           row.lng,
                 "zip3":          z3,
                 "tts_n":         tts_n,
                 "tier":          tier,
-                "is_muni":       is_muni,
                 "score":         round(result.viability_score, 1),
                 "lcoe":          round(result.lcoe, 4),
                 "payback":       round(result.simple_payback_years, 1),
@@ -232,7 +400,7 @@ def score_all_zips(
                 "ppw_used":      round(site_row["tts_median_price_per_watt"], 2),
                 "rate_used":     round(result.electricity_rate_used, 3),
                 "label":         result.viability_label,
-                "utility_type":  "Muni" if is_muni else "IOU (NEM 3.0)",
+                "utility_type":  utility_label,
             })
         except Exception as exc:
             logger.warning("ZIP %s (%s) failed: %s", row.zip, row.city, exc)
@@ -252,14 +420,14 @@ def build_hover(r: pd.Series, show_score: bool = True) -> str:
     """Build HTML hover tooltip for a ZIP row."""
     if not show_score:
         return (
-            f"<b>{r.city}, CA {r.zip}</b><br>"
+            f"<b>{r.city}, {r.state} {r.zip}</b><br>"
             f"County: {r.county}<br>"
             f"Confidence: Insufficient data (ZIP3 n={r.tts_n})<br>"
             f"Score: N/A"
         )
     irr_str = f"{r.irr:.1f}%" if r.irr is not None and not pd.isna(r.irr) else "n/a"
     return (
-        f"<b>{r.city}, CA {r.zip}</b><br>"
+        f"<b>{r.city}, {r.state} {r.zip}</b><br>"
         f"County: {r.county}<br>"
         f"<b>Score: {r.score:.0f}/100</b> — {r.label}<br>"
         f"Payback: {r.payback:.1f} yr | IRR: {irr_str}<br>"
@@ -274,6 +442,19 @@ def build_hover(r: pd.Series, show_score: bool = True) -> str:
 # Map builder
 # ──────────────────────────────────────────────────────────────────────────────
 
+_CA_FOOTNOTE = (
+    "Data: NREL PVWatts (yield), Berkeley Lab TTS ($/W, confidence), EIA (rates) · "
+    "NEM 3.0 export ≈ $0.055/kWh CPUC ACC avg · "
+    "Score = 25% resource + 50% economics + 15% site-fit + 10% policy"
+)
+
+_OR_FOOTNOTE = (
+    "Data: NREL PVWatts (yield), Berkeley Lab TTS ($/W, confidence), EIA (rates) · "
+    "OR: 1:1 net metering (ORS 757.300) · yield model splits at the Cascade crest · "
+    "Score = 25% resource + 50% economics + 15% site-fit + 10% policy"
+)
+
+
 def build_map(
     df: pd.DataFrame,
     title: str,
@@ -281,6 +462,7 @@ def build_map(
     center_lon: float,
     zoom: float,
     output_path: Path,
+    footnote: str = _CA_FOOTNOTE,
 ) -> None:
     """
     Build a Plotly Scattermap figure with three confidence-tier layers
@@ -366,13 +548,6 @@ def build_map(
 
     fig = go.Figure(traces)
 
-    # Subtitle annotation
-    subtitle = (
-        f"4.5 kW system · IOU: ${IOU_ELEC_RATE}/kWh NEM 3.0 (export ratio {IOU_EXPORT_RATIO}) · "
-        f"Muni: ${MUNI_ELEC_RATE}/kWh NEM 2.0-equiv · "
-        f"ZIP3 confidence tiers from {sum(v[0] for v in [])}"
-    )
-
     fig.update_layout(
         title=dict(
             text=title,
@@ -403,13 +578,9 @@ def build_map(
         ),
     )
 
-    # Annotation row: data credits + NEM 3.0 note
+    # Annotation row: data credits + policy note
     fig.add_annotation(
-        text=(
-            "Data: NREL PVWatts (yield), Berkeley Lab TTS ($/W, confidence), EIA (rates) · "
-            "NEM 3.0 export ≈ $0.055/kWh CPUC ACC avg · "
-            "Score = 25% resource + 50% economics + 15% site-fit + 10% policy"
-        ),
+        text=footnote,
         xref="paper", yref="paper",
         x=0.5, y=-0.01,
         xanchor="center", yanchor="top",
@@ -431,45 +602,46 @@ def build_map(
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    print("=" * 62)
-    print("  build_heatmap.py — California Solar Viability Heatmap")
-    print("=" * 62)
+def _score_state(state: str) -> pd.DataFrame:
+    """Shared load → TTS → score pipeline for one state."""
+    print(f"\n[1/3] Loading {state} ZIPs from uszips.csv …")
+    zips = load_state_zips(state)
+    print(f"      {len(zips):,} {state} ZIPs loaded")
 
-    # 1. Load CA ZIP coordinates
-    print("\n[1/4] Loading CA ZIPs from uszips.csv …")
-    zips = load_ca_zips()
-    print(f"      {len(zips):,} CA ZIPs loaded")
-
-    # 2. Load ZIP3 TTS sample sizes from warehouse
-    print("\n[2/4] Querying ZIP3 install sample sizes from warehouse …")
-    try:
-        con = duckdb.connect(WAREHOUSE_PATH, read_only=True)
-        tts_map = load_zip3_tts(con)
-        con.close()
-    except Exception as exc:
-        sys.exit(f"\n  ERROR opening warehouse: {exc}\n"
-                 f"  Make sure {WAREHOUSE_PATH} exists and has rows in raw_tts_installations.\n"
-                 f"  Run: python3 solar_etl.py --load-tts data/tts_cleaned.csv")
-
+    print("\n[2/3] Querying ZIP3 install sample sizes from warehouse …")
+    tts_map = try_load_zip3_tts(state)
     n_high   = sum(1 for n, _ in tts_map.values() if n >= 30)
     n_medium = sum(1 for n, _ in tts_map.values() if 5 <= n < 30)
     n_low    = sum(1 for n, _ in tts_map.values() if n < 5)
-    print(f"      {len(tts_map)} CA ZIP3 prefixes found")
+    print(f"      {len(tts_map)} {state} ZIP3 prefixes found")
     print(f"      High (≥30): {n_high}  Medium (5–29): {n_medium}  Low (<5): {n_low}")
 
-    # 3. Score all ZIPs
-    print(f"\n[3/4] Scoring {len(zips):,} ZIPs …  (typically 30–60 s)")
-    results = score_all_zips(zips, tts_map)
+    print(f"\n[3/3] Scoring {len(zips):,} ZIPs …")
+    results = score_all_zips(zips, tts_map, state=state)
     print(f"      Scored: {len(results):,} ZIPs")
     tc = results["tier"].value_counts().to_dict()
     print(f"      Tiers — high: {tc.get('high',0)}, medium: {tc.get('medium',0)}, na: {tc.get('na',0)}")
     print(f"      Score range: {results['score'].min():.1f} – {results['score'].max():.1f}  "
           f"(mean {results['score'].mean():.1f})")
+    return results
 
-    # 4. Build maps
-    print("\n[4/4] Generating interactive maps …")
 
+def _print_top5(results: pd.DataFrame) -> None:
+    hi = results[results.tier == "high"]
+    if not hi.empty:
+        top5 = hi.nlargest(5, "score")[["city", "zip", "score", "payback"]].values
+        print("  Top 5 scoring ZIPs (high-confidence):")
+        for city, z, s, pb in top5:
+            print(f"    {city:20s} {z}  score={s:.0f}  payback={pb:.1f} yr")
+
+
+def build_california() -> None:
+    print("=" * 62)
+    print("  build_heatmap.py — California Solar Viability Heatmap")
+    print("=" * 62)
+    results = _score_state("CA")
+
+    print("\nGenerating interactive maps …")
     # Statewide CA — initial view centered on Bay Area
     build_map(
         results,
@@ -493,18 +665,61 @@ def main() -> None:
     )
 
     print("\n" + "=" * 62)
-    print("  Done!")
     print("  heatmap_ca.html      — Statewide California view")
     print("  heatmap_norcal.html  — NorCal / Bay Area view")
     print()
-    # Quick stats
-    hi = results[results.tier == "high"]
-    if not hi.empty:
-        top5 = hi.nlargest(5, "score")[["city", "zip", "score", "payback"]].values
-        print("  Top 5 scoring ZIPs (high-confidence):")
-        for city, z, s, pb in top5:
-            print(f"    {city:20s} {z}  score={s:.0f}  payback={pb:.1f} yr")
+    _print_top5(results)
     print("=" * 62)
+
+
+def build_oregon() -> None:
+    print("=" * 62)
+    print("  build_heatmap.py — Oregon Solar Viability Heatmap")
+    print("=" * 62)
+    results = _score_state("OR")
+
+    print("\nGenerating interactive maps …")
+    # Statewide OR — centered between the Willamette Valley and the high desert
+    build_map(
+        results,
+        title="Oregon Residential Solar Viability — All ZIP Codes",
+        center_lat=44.10,
+        center_lon=-121.60,
+        zoom=6.0,
+        output_path=Path("heatmap_or.html"),
+        footnote=_OR_FOOTNOTE,
+    )
+
+    # Central Oregon subset — Bend / Redmond tri-county high desert
+    central = results[results["county"].isin(CENTRAL_OR_COUNTIES)].copy()
+    print(f"      Central OR subset: {len(central):,} ZIPs across "
+          f"{central['county'].nunique()} counties")
+    build_map(
+        central,
+        title="Central Oregon Solar Viability — Bend · Redmond · High Desert",
+        center_lat=44.15,
+        center_lon=-121.30,
+        zoom=8.3,
+        output_path=Path("heatmap_central_or.html"),
+        footnote=_OR_FOOTNOTE,
+    )
+
+    print("\n" + "=" * 62)
+    print("  heatmap_or.html          — Statewide Oregon view")
+    print("  heatmap_central_or.html  — Central Oregon (Bend/Redmond) view")
+    print()
+    _print_top5(results)
+    print("=" * 62)
+
+
+def main() -> None:
+    target = (sys.argv[1].lower() if len(sys.argv) > 1 else "ca")
+    if target not in ("ca", "or", "all"):
+        sys.exit(f"Unknown target {target!r}. Usage: python3 build_heatmap.py [ca|or|all]")
+    if target in ("ca", "all"):
+        build_california()
+    if target in ("or", "all"):
+        build_oregon()
 
 
 if __name__ == "__main__":

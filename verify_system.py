@@ -388,11 +388,12 @@ def verify_test_suite():
     section("Phase 8 — Full pytest suite passes")
     result = run(
         [sys.executable, "-m", "pytest",
-         "test_solar_economics.py", "test_integration.py", "-q", "--tb=no"],
+         "test_solar_economics.py", "test_integration.py", "test_oregon.py",
+         "-q", "--tb=no"],
     )
     last_line = result.stdout.strip().split("\n")[-1] if result.stdout else ""
     check(
-        "pytest test_solar_economics.py test_integration.py passes",
+        "pytest test_solar_economics.py test_integration.py test_oregon.py passes",
         result.returncode == 0,
         last_line,
     )
