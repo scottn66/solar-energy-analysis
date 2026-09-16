@@ -32,6 +32,7 @@ UTIL_SHORT = [
     ("city of riverside",           "Riverside PU"),
     ("pacific power",               "Pacific Power"),
     ("pacificorp",                  "Pacific Power"),
+    ("portland general",            "PGE"),
     ("central electric",            "Central Electric Co-op"),
     ("midstate electric",           "Midstate Electric Co-op"),
 ]
@@ -148,7 +149,7 @@ def build() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Solar Viability Reports | DATA 201</title>
+<title>Solar Viability Reports</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -314,13 +315,18 @@ def build() -> str:
       <a href="https://openei.org/wiki/Utility_Rate_Database" target="_blank" rel="noopener">OpenEI URDB</a>,
       <a href="https://www.eia.gov/" target="_blank" rel="noopener">EIA rate data</a>, and
       <a href="https://emp.lbl.gov/tracking-the-sun" target="_blank" rel="noopener">Berkeley Lab TTS</a>.
-      Built for DATA&nbsp;201 at Cal Poly Humboldt. &mdash; <a href="../heatmap/">Explore the ZIP-level heatmaps (California &amp; Oregon) &rarr;</a>
+      Started as a San Jose State DATA&nbsp;201 project; now an independent model.
+      &mdash; <a href="../heatmap/">Explore the ZIP-level heatmaps (California &amp; Oregon) &rarr;</a>
+    </p>
+    <p style="font-size:0.82rem;color:#888;margin-top:0.75rem;">
+      Independent research model — not financial, tax, or installation advice.
     </p>
   </div>
 </div>
 
 <footer>
-  Solar Viability Reports &middot; DATA 201 &middot; Cal Poly Humboldt
+  Solar viability reports &middot; Scott Nelson &middot;
+  <a href="https://github.com/scottn66/solar-energy-analysis" style="color:#26A69A;">GitHub</a>
 </footer>
 
 <script>

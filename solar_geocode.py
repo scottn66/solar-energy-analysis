@@ -37,7 +37,11 @@ _session = requests_cache.CachedSession(
 # Module-level state
 # ---------------------------------------------------------------------------
 _uszips: dict[str, dict] | None = None          # lazy-loaded ZIP lookup
+_state_names: dict[str, str] | None = None       # "oregon" → "OR"
 _nominatim_last_call: float = 0.0                # rate-limit tracker
+_NOMINATIM_UA = (
+    "solar-viability/1.0 (https://github.com/scottn66/solar-energy-analysis)"
+)
 
 _ZIP_RE = re.compile(r"^\d{5}$")
 
@@ -56,6 +60,7 @@ class GeocodeResult:
     zip_code: str
     source: str
     confidence: str  # "high" | "medium" | "low"
+    country: str = "US"  # ISO 3166-1 alpha-2
 
 
 class GeocodeError(Exception):
@@ -69,19 +74,38 @@ def _load_uszips() -> dict[str, dict]:
     """Load *data/uszips.csv* (relative to this module) into a dict keyed by
     ZIP code string.  Comment lines (starting with ``#``) are skipped.
     """
-    global _uszips
+    global _uszips, _state_names
     if _uszips is not None:
         return _uszips
 
     csv_path = Path(__file__).resolve().parent / "data" / "uszips.csv"
     _uszips = {}
+    names: dict[str, str] = {}
     with open(csv_path, newline="", encoding="utf-8") as fh:
         # Skip comment lines before handing off to DictReader
         lines = (line for line in fh if not line.startswith("#"))
         reader = csv.DictReader(lines)
         for row in reader:
             _uszips[row["zip"]] = row
+            sid = (row.get("state_id") or "").strip()
+            sname = (row.get("state_name") or "").strip().lower()
+            if sid:
+                names[sid.lower()] = sid
+            if sname and sid:
+                names[sname] = sid
+    _state_names = names
     return _uszips
+
+
+def _normalize_state(raw: str) -> str:
+    """Map 'Oregon' or 'or' to 'OR'. Unknown values are returned unchanged."""
+    if not raw:
+        return ""
+    s = raw.strip()
+    if len(s) == 2 and s.isalpha():
+        return s.upper()
+    _load_uszips()
+    return (_state_names or {}).get(s.lower(), s)
 
 
 def _try_zip_lookup(location: str) -> GeocodeResult | None:
@@ -102,6 +126,7 @@ def _try_zip_lookup(location: str) -> GeocodeResult | None:
         zip_code=row["zip"],
         source="uszips",
         confidence="medium",
+        country="US",
     )
 
 
@@ -135,7 +160,7 @@ def _try_census(location: str) -> GeocodeResult | None:
     if lat is None or lon is None:
         return None
 
-    state = components.get("state", "")
+    state = _normalize_state(components.get("state", ""))
     zip_code = components.get("zip", "")
     matched_address = match.get("matchedAddress", location)
 
@@ -144,7 +169,9 @@ def _try_census(location: str) -> GeocodeResult | None:
     if not state and matched_address:
         parts = [p.strip() for p in matched_address.split(",")]
         if len(parts) >= 3:
-            state = parts[-2].strip().split()[0] if parts[-2].strip() else ""
+            state = _normalize_state(
+                parts[-2].strip().split()[0] if parts[-2].strip() else ""
+            )
 
     confidence = "high" if len(matches) == 1 else "medium"
 
@@ -156,11 +183,12 @@ def _try_census(location: str) -> GeocodeResult | None:
         zip_code=zip_code,
         source="census",
         confidence=confidence,
+        country="US",
     )
 
 
-def _try_nominatim(location: str) -> GeocodeResult | None:
-    """Query the OpenStreetMap Nominatim API (US-only, rate-limited)."""
+def _try_nominatim(location: str, us_only: bool = True) -> GeocodeResult | None:
+    """Query the OpenStreetMap Nominatim API (rate-limited)."""
     global _nominatim_last_call
 
     # Enforce 1-second minimum between calls
@@ -171,13 +199,13 @@ def _try_nominatim(location: str) -> GeocodeResult | None:
     url = "https://nominatim.openstreetmap.org/search"
     params = {
         "format": "json",
-        "countrycodes": "us",
         "addressdetails": 1,
+        "limit": 1,
         "q": location,
     }
-    headers = {
-        "User-Agent": "solar-viability-tool/1.0 (contact@example.com)",
-    }
+    if us_only:
+        params["countrycodes"] = "us"
+    headers = {"User-Agent": _NOMINATIM_UA}
 
     try:
         resp = _session.get(url, params=params, headers=headers, timeout=15)
@@ -193,11 +221,9 @@ def _try_nominatim(location: str) -> GeocodeResult | None:
         return None
 
     hit = data[0]
-
-    # Validate US-only
     address_detail = hit.get("address", {})
-    country_code = address_detail.get("country_code", "")
-    if country_code != "us":
+    country_code = (address_detail.get("country_code") or "").upper()
+    if us_only and country_code and country_code != "US":
         logger.warning(
             "Nominatim returned non-US result (country_code=%s); skipping.",
             country_code,
@@ -211,8 +237,16 @@ def _try_nominatim(location: str) -> GeocodeResult | None:
         logger.warning("Nominatim response missing lat/lon: %s", exc)
         return None
 
-    state = address_detail.get("state", "")
-    zip_code = address_detail.get("postcode", "")
+    if country_code == "US":
+        state = _normalize_state(address_detail.get("state", ""))
+        postcode = address_detail.get("postcode", "") or ""
+        zip_code = postcode.split("-")[0][:5] if postcode[:5].isdigit() else postcode
+        country = "US"
+    else:
+        state = ""
+        zip_code = address_detail.get("postcode", "") or ""
+        country = country_code or "XX"
+
     display_name = hit.get("display_name", location)
 
     return GeocodeResult(
@@ -222,7 +256,8 @@ def _try_nominatim(location: str) -> GeocodeResult | None:
         state=state,
         zip_code=zip_code,
         source="nominatim",
-        confidence="medium",
+        confidence="medium" if country == "US" else "low",
+        country=country,
     )
 
 
@@ -239,8 +274,8 @@ def geocode(location: str) -> GeocodeResult:
        up in the bundled ``data/uszips.csv`` file (fast, offline).
     2. **US Census Geocoder** -- authoritative for US street addresses;
        confidence is ``"high"`` when exactly one match is returned.
-    3. **Nominatim (OpenStreetMap)** -- broad coverage fallback limited to
-       US results (``countrycodes=us``).  A 1-second rate limit is enforced.
+    3. **Nominatim (OpenStreetMap)** -- US results first, then a global
+       retry so non-US cities resolve.  A 1-second rate limit is enforced.
 
     All HTTP requests are routed through a :class:`requests_cache.CachedSession`
     backed by a SQLite database in ``~/.solar_cache/`` with a 30-day TTL.
@@ -281,14 +316,20 @@ def geocode(location: str) -> GeocodeResult:
         return result
     logger.warning("Census geocoder returned no results; falling back to Nominatim.")
 
-    # (c) Nominatim fallback
-    tried.append("nominatim")
-    result = _try_nominatim(location)
+    # (c) Nominatim US fallback
+    tried.append("nominatim-us")
+    result = _try_nominatim(location, us_only=True)
     if result is not None:
         return result
     logger.warning("Nominatim returned no US results for location: %s", location)
 
-    # (d) All providers exhausted
+    # (d) Nominatim worldwide — production estimates still work via PVWatts
+    tried.append("nominatim-global")
+    result = _try_nominatim(location, us_only=False)
+    if result is not None:
+        return result
+
+    # (e) All providers exhausted
     raise GeocodeError(
         f"All geocoding providers failed for '{location}'. Tried: {', '.join(tried)}"
     )

@@ -92,6 +92,7 @@ class TestGeocode:
         assert result.state == "CA"
         assert result.source == "uszips"
         assert result.confidence == "medium"
+        assert result.country == "US"
         assert abs(result.lat - 37.35) < 0.05
 
     def test_zip_returns_city(self):
@@ -652,6 +653,13 @@ class TestWarehouse:
         # the row count constant — proves idempotence
         n2 = load_tts(csv_path, db_path=db)
         assert n2 == 2
+
+        from solar_warehouse import tts_market_stats
+        # Mini CSV has 1 CA row at 94061, so ZIP3 n=1 < 5 → state fallback
+        stats = tts_market_stats("CA", "94061", conn=conn)
+        assert stats["level"] == "state"
+        assert stats["n"] == 1
+        assert abs(stats["median_ppw"] - 3.50) < 1e-6
         conn.close()
 
     def test_staging_row_is_queryable(self, tmp_path):

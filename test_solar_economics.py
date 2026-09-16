@@ -471,3 +471,17 @@ class TestRateResolution:
         rate, src = _resolve_electricity_rate("XX", None, override=None)
         assert rate == 0.16
         assert src == "national_median"
+
+
+class TestAssumptionFormatting:
+
+    def test_itc_and_rate_are_human_readable(self):
+        from solar_viz import format_assumption
+        label, value = format_assumption("federal_itc", 0.30)
+        assert "ITC" in label or "tax credit" in label.lower()
+        assert "30" in value
+        label, value = format_assumption("electricity_price_override", 0.389)
+        assert "$0.389" in value
+        label, value = format_assumption("system_life_years", 25)
+        assert "25" in value
+        assert "year" in value.lower()

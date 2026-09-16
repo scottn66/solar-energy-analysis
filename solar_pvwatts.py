@@ -128,6 +128,70 @@ _session = requests_cache.CachedSession(
 _PVWATTS_URL = "https://developer.nrel.gov/api/pvwatts/v8.json"
 _MAX_RETRIES = 3
 _BACKOFF_SECONDS = [1, 2, 4]
+# kWh_ac per (kWh/m² GHI), calibrated to PVWatts at San Jose (1665 kWh/kW, GHI 5.32)
+_NASA_TO_PVWATTS_K = 0.857
+_MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+           "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def _redact(exc: Exception) -> str:
+    """Strip API keys from exception text before logging."""
+    text = str(exc)
+    key = os.environ.get("NREL_API_KEY")
+    if key:
+        text = text.replace(key, "REDACTED")
+    return text
+
+
+def _nasa_power_estimate(
+    lat: float,
+    lon: float,
+    system_kw: float,
+    losses: float = 14.0,
+) -> PVWattsResult:
+    """Estimate production from NASA POWER climatology when NREL is down.
+
+    Uses all-sky GHI climatology, scaled by a factor calibrated to PVWatts
+    at San Jose. Good enough for a first-look quote; reports mark the source.
+    """
+    url = "https://power.larc.nasa.gov/api/temporal/climatology/point"
+    params = {
+        "parameters": "ALLSKY_SFC_SW_DWN",
+        "community": "RE",
+        "longitude": lon,
+        "latitude": lat,
+        "format": "JSON",
+    }
+    resp = _session.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    ghi = resp.json()["properties"]["parameter"]["ALLSKY_SFC_SW_DWN"]
+    loss_adj = (1.0 - losses / 100.0) / (1.0 - 0.14)
+    monthly_ac = []
+    monthly_poa = []
+    for month, days in zip(_MONTHS, _DAYS):
+        daily = float(ghi[month])
+        monthly_poa.append(daily * days)
+        monthly_ac.append(daily * days * system_kw * _NASA_TO_PVWATTS_K * loss_adj)
+    annual = float(sum(monthly_ac))
+    ann_ghi = float(ghi["ANN"])
+    cf = annual / (system_kw * 8760.0) if system_kw else 0.0
+    logger.info(
+        "NASA POWER fallback: GHI %.2f kWh/m²/day → %.0f kWh/yr (%.0f kWh/kW)",
+        ann_ghi, annual, annual / system_kw if system_kw else 0.0,
+    )
+    return PVWattsResult(
+        pvwatts_ac_annual_kwh=annual,
+        pvwatts_solrad_annual=ann_ghi,
+        pvwatts_capacity_factor=cf,
+        pvwatts_ac_monthly=monthly_ac,
+        pvwatts_poa_monthly=monthly_poa,
+        pvwatts_dc_monthly=[x / 0.96 for x in monthly_ac],
+        pvwatts_station_distance_m=50_000.0,  # flags "moderate/distant" confidence
+        pvwatts_station_lat=lat,
+        pvwatts_station_lon=lon,
+        pvwatts_version="nasa-power-climatology",
+    )
 
 
 def fetch_pvwatts(
@@ -232,20 +296,16 @@ def fetch_pvwatts(
                 logger.warning(
                     "PVWatts request failed (attempt %d/%d): %s  "
                     "— retrying in %ds",
-                    attempt + 1, _MAX_RETRIES, exc, wait,
+                    attempt + 1, _MAX_RETRIES, _redact(exc), wait,
                 )
                 time.sleep(wait)
     else:
-        # All retries exhausted
-        msg = f"PVWatts API failed after {_MAX_RETRIES} attempts"
+        logger.warning("PVWatts unreachable; falling back to NASA POWER climatology")
         try:
-            error_body = resp.json()  # type: ignore[possibly-undefined]
-            nrel_errors = error_body.get("errors", [])
-            if nrel_errors:
-                msg += f": {'; '.join(nrel_errors)}"
-        except Exception:
-            pass
-        raise PVWattsError(msg) from last_error
+            return _nasa_power_estimate(lat, lon, system_kw, losses=losses)
+        except Exception as nasa_exc:
+            msg = f"PVWatts API failed after {_MAX_RETRIES} attempts"
+            raise PVWattsError(msg) from last_error
 
     # --- Parse response ---
     data = resp.json()

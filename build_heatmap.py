@@ -30,8 +30,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import shutil
 import sys
 from pathlib import Path
 
@@ -664,9 +666,38 @@ def build_california() -> None:
         output_path=Path("heatmap_norcal.html"),
     )
 
+    # Compact ZIP lookup JSON for the static GitHub Pages search box
+    lookup = []
+    for r in results.itertuples(index=False):
+        show = r.tier != "na"
+        lookup.append({
+            "z": r.zip,
+            "c": r.city,
+            "co": getattr(r, "county", ""),
+            "s": r.score if show else None,
+            "p": r.payback if show else None,
+            "n": int(r.npv) if show else None,
+            "l": r.lcoe if show else None,
+            "v": r.label if show else None,
+            "t": r.tier,
+        })
+    json_path = Path("data/ca_zips.json")
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(lookup, separators=(",", ":")))
+    print(f"      Lookup JSON: {json_path}  ({json_path.stat().st_size // 1024} KB)")
+
+    deploy = Path("_deploy/solar")
+    if deploy.exists():
+        (deploy / "data").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(json_path, deploy / "data" / "ca_zips.json")
+        shutil.copy2(Path("heatmap_ca.html"), deploy / "heatmap" / "heatmap_ca.html")
+        shutil.copy2(Path("heatmap_norcal.html"), deploy / "heatmap" / "heatmap_norcal.html")
+        print("      Copied maps + lookup JSON to _deploy/solar/")
+
     print("\n" + "=" * 62)
     print("  heatmap_ca.html      — Statewide California view")
     print("  heatmap_norcal.html  — NorCal / Bay Area view")
+    print("  data/ca_zips.json    — ZIP lookup for the public demo")
     print()
     _print_top5(results)
     print("=" * 62)

@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import date
 from typing import Optional
 
@@ -36,6 +36,47 @@ from solar_nem import get_export_value, ExportValueResult
 from solar_economics import score_site, Assumptions, DEFAULTS, SiteResult
 
 logger = logging.getLogger(__name__)
+
+
+class QuoteError(Exception):
+    """User-facing pipeline failure (missing local tariff, etc.)."""
+
+
+def lookup_tts_stats(state: str | None, zip_code: str | None) -> dict:
+    """ZIP3/state install counts and median $/W. Never raises."""
+    try:
+        from solar_warehouse import tts_market_stats
+        return tts_market_stats(state, zip_code)
+    except Exception as exc:
+        logger.warning("TTS lookup skipped: %s", exc)
+        return {"n": 1000, "median_ppw": 3.50, "level": "default"}
+
+
+def viz_row_from_quote(quote: QuoteResult) -> dict:
+    """Build the row dict solar_viz expects from a completed quote."""
+    tts = lookup_tts_stats(quote.geocode_result.state, quote.geocode_result.zip_code)
+    default_ppw = quote.site_result.assumptions_used.get("default_price_per_watt", 3.50)
+    if tts["level"] in ("zip3", "state") and tts["n"] >= 5:
+        ppw = tts["median_ppw"]
+    else:
+        ppw = default_ppw
+    n = tts["n"] if tts["level"] != "default" else 1000
+    row = quote.pvwatts_result.to_dict()
+    row.update({
+        "site_id": quote.site_result.site_id,
+        "address_label": quote.geocode_result.resolved_address,
+        "lat": quote.geocode_result.lat,
+        "lon": quote.geocode_result.lon,
+        "system_capacity_kw": quote.system_kw_used,
+        "state": quote.geocode_result.state,
+        "zip_code": quote.geocode_result.zip_code,
+        "azimuth": 180.0,
+        "tilt": abs(quote.geocode_result.lat),
+        "losses": 14.0,
+        "tts_recent_sample_size": n,
+        "tts_median_price_per_watt": ppw,
+    })
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -122,12 +163,16 @@ def _assess_confidence(
         reasons.append(f"Rate: bundled current rate schedule ({rate.rate_name})")
     elif rate.source == "nrel_v3":
         reasons.append("Rate: NREL v3 simple lookup (less precise)")
+    elif rate.source == "user_supplied":
+        reasons.append("Rate: user-supplied tariff (no utility lookup)")
     else:
         reasons.append(f"Rate: fallback ({rate.source})")
 
     # PVWatts station proximity
     dist_km = pvw.pvwatts_station_distance_m / 1000.0
-    if dist_km < 10:
+    if "nasa" in (pvw.pvwatts_version or "").lower():
+        reasons.append("Solar data: NASA POWER climatology (NREL PVWatts unavailable)")
+    elif dist_km < 10:
         reasons.append(f"Solar data: nearby station ({dist_km:.1f} km)")
     elif dist_km < 50:
         reasons.append(f"Solar data: moderate distance ({dist_km:.1f} km)")
@@ -163,6 +208,7 @@ def quote_from_location(
     detailed: bool = True,
     install_date: Optional[date] = None,
     assumptions: Optional[Assumptions] = None,
+    electricity_rate: Optional[float] = None,
 ) -> QuoteResult:
     """
     End-to-end solar quote from a plain-text location string.
@@ -191,6 +237,9 @@ def quote_from_location(
         cutoff is 2023-04-15).  Defaults to today.
     assumptions : Assumptions, optional
         Override any economic parameters.  See solar_economics.Assumptions.
+    electricity_rate : float, optional
+        Retail electricity price in $/kWh. Overrides the looked-up utility
+        rate. Required for locations outside US utility databases.
 
     Returns
     -------
@@ -207,6 +256,10 @@ def quote_from_location(
     geo = geocode(location)
     logger.info("Resolved: %s → (%.4f, %.4f) %s [%s]",
                 geo.resolved_address, geo.lat, geo.lon, geo.state, geo.source)
+    is_us = (getattr(geo, "country", "US") or "US").upper() == "US"
+    if not is_us:
+        # The US federal ITC does not apply abroad.
+        assumptions = replace(assumptions, federal_itc=0.0)
 
     # --- Step 2: Determine system size ---
     sizing_method = "default"
@@ -233,31 +286,74 @@ def quote_from_location(
     pvw = fetch_pvwatts(geo.lat, geo.lon, system_kw=size_kw)
 
     # --- Step 4: Utility rate ---
-    logger.info("Looking up utility rate...")
-    if detailed:
-        rate = get_rate(geo.lat, geo.lon, state=geo.state)
-    else:
-        from solar_urdb import fetch_rate_fast
-        try:
-            rate = fetch_rate_fast(geo.lat, geo.lon)
-        except Exception as e:
-            logger.warning("fetch_rate_fast failed: %s; using get_rate fallback", e)
+    if is_us:
+        logger.info("Looking up utility rate...")
+        if detailed:
             rate = get_rate(geo.lat, geo.lon, state=geo.state)
-
-    logger.info("Rate: $%.4f/kWh from %s (%s)", rate.flat_rate, rate.utility_name, rate.source)
+        else:
+            from solar_urdb import fetch_rate_fast
+            try:
+                rate = fetch_rate_fast(geo.lat, geo.lon)
+            except Exception as e:
+                logger.warning("fetch_rate_fast failed: %s; using get_rate fallback", e)
+                rate = get_rate(geo.lat, geo.lon, state=geo.state)
+        logger.info("Rate: $%.4f/kWh from %s (%s)", rate.flat_rate, rate.utility_name, rate.source)
+    else:
+        used = electricity_rate
+        if used is None:
+            used = assumptions.electricity_price_override
+        if used is None:
+            raise QuoteError(
+                "This location is outside US utility databases. "
+                "NREL can still estimate production, but the cashflow model "
+                "needs a local electricity rate ($/kWh)."
+            )
+        rate = RateResult(
+            flat_rate=float(used),
+            hourly_rates=None,
+            fixed_monthly_charge=0.0,
+            utility_name="User-supplied rate",
+            rate_name="Local tariff (entered)",
+            rate_uri="",
+            source="user_supplied",
+            effective_date=None,
+            is_tou=False,
+            is_tiered=False,
+            raw={},
+        )
+        logger.info("Non-US quote using user rate $%.4f/kWh", rate.flat_rate)
 
     # --- Step 5: NEM export value ---
-    export = get_export_value(
-        state=geo.state,
-        retail_rate=rate.flat_rate,
-        install_date=install_dt,
-        hourly_production=None,  # TODO: derive from PVWatts monthly if TOU
-        hourly_rates=rate.hourly_rates,
-        utility_name=rate.utility_name,
-    )
+    if is_us:
+        export = get_export_value(
+            state=geo.state,
+            retail_rate=rate.flat_rate,
+            install_date=install_dt,
+            hourly_production=None,  # TODO: derive from PVWatts monthly if TOU
+            hourly_rates=rate.hourly_rates,
+            utility_name=rate.utility_name,
+        )
+    else:
+        export = ExportValueResult(
+            avg_export_rate=rate.flat_rate * 0.50,
+            policy_name="Unknown export policy",
+            explanation=(
+                "Export compensation outside the US is utility-specific. "
+                "This run assumes 50% of the retail rate you entered."
+            ),
+            state=geo.country,
+            is_exact=False,
+        )
     logger.info("Export policy: %s → $%.4f/kWh avg", export.policy_name, export.avg_export_rate)
 
     # --- Step 6: Build row dict for score_site ---
+    tts = lookup_tts_stats(geo.state, geo.zip_code)
+    if tts["level"] in ("zip3", "state") and tts["n"] >= 5:
+        ppw = tts["median_ppw"]
+    else:
+        ppw = assumptions.default_price_per_watt
+    tts_n = tts["n"] if tts["level"] != "default" else 1000
+
     row = pvw.to_dict()
     row.update({
         "site_id": f"quote_{geo.zip_code or 'unknown'}",
@@ -271,18 +367,19 @@ def quote_from_location(
         "state": geo.state,
         "zip_code": geo.zip_code,
         "customer_segment": "RES",
-        "tts_recent_sample_size": 1000,  # conservative default
-        "tts_median_price_per_watt": assumptions.default_price_per_watt,
+        "tts_recent_sample_size": tts_n,
+        "tts_median_price_per_watt": ppw,
     })
 
     # Wire the real rate and export ratio into assumptions
-    nem_ratio = (export.avg_export_rate / rate.flat_rate) if rate.flat_rate > 0 else 0.75
+    effective_rate = electricity_rate if electricity_rate is not None else rate.flat_rate
+    nem_ratio = (export.avg_export_rate / effective_rate) if effective_rate > 0 else 0.75
     nem_ratio = min(max(nem_ratio, 0.0), 1.5)  # clamp to reasonable range
 
     scored_assumptions = Assumptions(
         **{
             **{k: getattr(assumptions, k) for k in assumptions.__dataclass_fields__},
-            "electricity_price_override": rate.flat_rate,
+            "electricity_price_override": effective_rate,
             "nem_export_ratio": nem_ratio,
         }
     )
@@ -404,6 +501,8 @@ def main():
     parser.add_argument("--system-kw", type=float, help="System size in kW DC")
     parser.add_argument("--fast", action="store_true", help="Use NREL v3 rate lookup (faster, less precise)")
     parser.add_argument("--install-date", type=str, help="Installation date (YYYY-MM-DD)")
+    parser.add_argument("--rate", type=float, dest="electricity_rate",
+                        help="Retail electricity rate in $/kWh (required outside the US)")
     parser.add_argument("--output", "-o", type=str, help="Write HTML report to this path")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
@@ -426,8 +525,9 @@ def main():
             system_kw=args.system_kw,
             detailed=not args.fast,
             install_date=install_dt,
+            electricity_rate=args.electricity_rate,
         )
-    except (GeocodeError, PVWattsError) as e:
+    except (GeocodeError, PVWattsError, URDBError, QuoteError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -435,21 +535,7 @@ def main():
 
     if args.output:
         from solar_viz import generate_report
-        row = quote.pvwatts_result.to_dict()
-        row.update({
-            "site_id": quote.site_result.site_id,
-            "address_label": quote.geocode_result.resolved_address,
-            "lat": quote.geocode_result.lat,
-            "lon": quote.geocode_result.lon,
-            "system_capacity_kw": quote.system_kw_used,
-            "state": quote.geocode_result.state,
-            "zip_code": quote.geocode_result.zip_code,
-            "azimuth": 180.0,
-            "tilt": abs(quote.geocode_result.lat),
-            "losses": 14.0,
-            "tts_recent_sample_size": 1000,
-            "tts_median_price_per_watt": DEFAULTS.default_price_per_watt,
-        })
+        row = viz_row_from_quote(quote)
         generate_report(
             [quote.site_result],
             args.output,

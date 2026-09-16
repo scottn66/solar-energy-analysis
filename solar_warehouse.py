@@ -328,6 +328,95 @@ def latest_quote(
             conn.close()
 
 
+_TTS_DEFAULT = {"n": 1000, "median_ppw": 3.50, "level": "default"}
+
+
+def tts_market_stats(
+    state: str | None = None,
+    zip_code: str | None = None,
+    conn: duckdb.DuckDBPyConnection | None = None,
+) -> dict:
+    """Local install count and median $/W from Tracking the Sun.
+
+    Preference order:
+      1. ZIP3 (first three digits) when ``n >= 5``
+      2. State
+      3. ``level="empty"`` if the warehouse is present but has no match
+      4. ``level="default"`` if the warehouse file / table is unavailable
+         (keeps offline tests and keyless clones working)
+
+    Returns ``{"n": int, "median_ppw": float, "level": str}``.
+    """
+    close_when_done = conn is None
+    try:
+        if conn is None:
+            path = DEFAULT_DB_PATH
+            if not path.exists():
+                return dict(_TTS_DEFAULT)
+            conn = get_conn()
+            ensure_schema(conn)
+
+        n_table = conn.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'raw_tts_installations'"
+        ).fetchone()[0]
+        if not n_table:
+            return dict(_TTS_DEFAULT)
+
+        zip3 = None
+        if zip_code:
+            z = str(zip_code).split("-")[0].zfill(5)[:5]
+            if z.isdigit() and len(z) == 5:
+                zip3 = z[:3]
+
+        if zip3:
+            row = conn.execute(
+                """
+                SELECT count(*) AS n, median(price_per_watt) AS ppw
+                FROM raw_tts_installations
+                WHERE zip_code IS NOT NULL
+                  AND substr(zip_code, 1, 3) = ?
+                  AND price_per_watt BETWEEN 0.50 AND 15.0
+                """,
+                [zip3],
+            ).fetchone()
+            if row and row[0] and int(row[0]) >= 5:
+                return {
+                    "n": int(row[0]),
+                    "median_ppw": float(row[1]) if row[1] is not None else 3.50,
+                    "level": "zip3",
+                }
+
+        st = (state or "").strip().upper()
+        if st and len(st) == 2:
+            row = conn.execute(
+                """
+                SELECT count(*) AS n, median(price_per_watt) AS ppw
+                FROM raw_tts_installations
+                WHERE state = ?
+                  AND price_per_watt BETWEEN 0.50 AND 15.0
+                """,
+                [st],
+            ).fetchone()
+            if row and row[0] and int(row[0]) > 0:
+                return {
+                    "n": int(row[0]),
+                    "median_ppw": float(row[1]) if row[1] is not None else 3.50,
+                    "level": "state",
+                }
+
+        return {"n": 0, "median_ppw": 3.50, "level": "empty"}
+    except Exception as exc:
+        logger.warning("TTS market lookup failed: %s", exc)
+        return dict(_TTS_DEFAULT)
+    finally:
+        if close_when_done and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def table_counts(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
     """Return row counts for every table.  Useful for smoke tests + debugging."""
     out: dict[str, int] = {}

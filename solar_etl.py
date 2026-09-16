@@ -162,6 +162,7 @@ def etl_quote(
     install_date: Optional[date] = None,
     assumptions: Optional[Assumptions] = None,
     db_path: Optional[Path] = None,
+    electricity_rate: Optional[float] = None,
 ) -> QuoteResult:
     """
     Run the full solar quote pipeline and persist all intermediate results
@@ -201,6 +202,7 @@ def etl_quote(
             system_kw=system_kw,
             install_date=install_date,
             assumptions=assumptions,
+            electricity_rate=electricity_rate,
         )
 
         # Stage each step's output.  We re-capture from the QuoteResult

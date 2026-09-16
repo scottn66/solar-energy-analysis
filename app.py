@@ -20,11 +20,11 @@ load_dotenv()
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from solar_fetch import quote_from_location, QuoteResult
+from solar_fetch import quote_from_location, QuoteResult, QuoteError, viz_row_from_quote
 from solar_geocode import GeocodeError
 from solar_pvwatts import PVWattsError
 from solar_urdb import URDBError
-from solar_viz import generate_report_html, PALETTE
+from solar_viz import generate_report_html, PALETTE, DISCLAIMER
 from solar_warehouse import latest_quote, quote_from_dict
 from solar_etl import etl_quote
 import json
@@ -257,8 +257,8 @@ LANDING_HTML = f"""<!DOCTYPE html>
 <div class="hero">
     <h1>Is solar worth it at your address?</h1>
     <p class="subtitle">
-        Enter any US address or ZIP code. We'll pull real solar data, your utility's rates,
-        and run a full financial analysis in seconds.
+        Enter a US address or ZIP — California is modeled in depth (NEM 3.0, 2.6M installs).
+        Oregon, including Bend, uses live NREL production and 1:1 net metering.
     </p>
 
     <form class="search-form"
@@ -267,7 +267,7 @@ LANDING_HTML = f"""<!DOCTYPE html>
           hx-indicator="#result">
         <div class="search-row">
             <input type="text" name="location" class="search-input"
-                   placeholder="Address, city, or ZIP code..."
+                   placeholder="Address, city, or ZIP — try 97701 or 94061"
                    required autofocus>
             <button type="submit" class="search-btn">Analyze</button>
         </div>
@@ -286,6 +286,13 @@ LANDING_HTML = f"""<!DOCTYPE html>
                     <label>System size (kW)</label>
                     <input type="number" name="system_kw" placeholder="auto-sized"
                            step="0.5" min="1">
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field-group">
+                    <label>Electricity rate ($/kWh)</label>
+                    <input type="number" name="electricity_rate" placeholder="auto from utility"
+                           step="0.01" min="0.01" max="2">
                 </div>
             </div>
         </div>
@@ -321,7 +328,9 @@ LANDING_HTML = f"""<!DOCTYPE html>
 </div>
 
 <div class="footer">
-    Data: NREL PVWatts v8.5 &middot; OpenEI URDB &middot; NASA POWER &middot; EIA
+    {DISCLAIMER}<br><br>
+    Data: NREL PVWatts &middot; OpenEI URDB &middot; EIA &middot; Berkeley Lab Tracking the Sun
+    &middot; <a href="https://github.com/scottn66/solar-energy-analysis" style="color:{PALETTE['teal']};">Source</a>
 </div>
 
 </body>
@@ -339,6 +348,7 @@ async def api_quote(
     location: str = Form(...),
     monthly_kwh: float = Form(None),
     system_kw: float = Form(None),
+    electricity_rate: float = Form(None),
 ):
     """
     Handle a quote request. Returns an HTML fragment that HTMX swaps into #result.
@@ -365,26 +375,10 @@ async def api_quote(
                 location=location,
                 monthly_kwh=monthly_kwh if monthly_kwh else None,
                 system_kw=system_kw if system_kw else None,
+                electricity_rate=electricity_rate if electricity_rate else None,
             )
 
-        # Build row for report
-        row = quote.pvwatts_result.to_dict()
-        row.update({
-            "site_id": quote.site_result.site_id,
-            "address_label": quote.geocode_result.resolved_address,
-            "lat": quote.geocode_result.lat,
-            "lon": quote.geocode_result.lon,
-            "system_capacity_kw": quote.system_kw_used,
-            "state": quote.geocode_result.state,
-            "zip_code": quote.geocode_result.zip_code,
-            "azimuth": 180.0,
-            "tilt": abs(quote.geocode_result.lat),
-            "losses": 14.0,
-            "tts_recent_sample_size": 1000,
-            "tts_median_price_per_watt": quote.site_result.assumptions_used.get(
-                "default_price_per_watt", 3.50
-            ),
-        })
+        row = viz_row_from_quote(quote)
 
         # Generate inline HTML (not full page)
         html = generate_report_html(
@@ -408,10 +402,17 @@ async def api_quote(
             "NREL's PVWatts service returned an error. Please try again.",
             str(e),
         ))
+    except QuoteError as e:
+        return HTMLResponse(content=_error_card(
+            "Local electricity rate needed",
+            str(e),
+            "Open Advanced options and enter your tariff in $/kWh, then try again.",
+        ))
     except URDBError as e:
         return HTMLResponse(content=_error_card(
             "Rate lookup failed",
-            "We couldn't find utility rates for this location.",
+            "We couldn't find utility rates for this location. "
+            "You can enter a $/kWh rate under Advanced options.",
             str(e),
         ))
     except Exception as e:

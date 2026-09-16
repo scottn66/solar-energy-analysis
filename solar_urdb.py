@@ -312,6 +312,38 @@ def _load_eia_state_rates() -> dict[str, float]:
     return rates
 
 
+_STATE_IN_NAME = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
+    "California": "CA", "Colorado": "CO", "Connecticut": "CT",
+    "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI",
+    "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
+    "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME",
+    "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI",
+    "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO",
+    "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
+    "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM",
+    "New York": "NY", "North Carolina": "NC", "North Dakota": "ND",
+    "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
+    "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD",
+    "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT",
+    "Virginia": "VA", "Washington": "WA", "West Virginia": "WV",
+    "Wisconsin": "WI", "Wyoming": "WY", "District of Columbia": "DC",
+}
+
+
+def _utility_label_for_state(name: str, state: str) -> str:
+    """If URDB tagged a utility with the wrong state, fix the label."""
+    if not name or not state:
+        return name or ""
+    st = state.strip().upper()
+    for word, abbr in _STATE_IN_NAME.items():
+        needle = f"({word})"
+        if needle in name and abbr != st:
+            inv = {v: k for k, v in _STATE_IN_NAME.items()}
+            return name.replace(needle, f"({inv.get(st, st)})")
+    return name
+
+
 def _load_bundled_tou(utility_name: str, state: str | None = None) -> RateResult | None:
     """Load a bundled rate schedule for a known utility.
 
@@ -801,7 +833,9 @@ def get_rate(
                         flat_rate=eia_rate,
                         hourly_rates=None,
                         fixed_monthly_charge=urdb_result.fixed_monthly_charge,
-                        utility_name=urdb_result.utility_name,
+                        utility_name=_utility_label_for_state(
+                            urdb_result.utility_name, state
+                        ),
                         rate_name=f"EIA {state.upper()} {eia_period} (URDB was stale: {urdb_result.rate_name})",
                         rate_uri="https://www.eia.gov/electricity/monthly/epm_table_5_6_a.html",
                         source=eia_source,

@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from solar_fetch import quote_from_location
+from solar_fetch import quote_from_location, viz_row_from_quote
 from solar_geocode import GeocodeError
 from solar_pvwatts import PVWattsError
 from solar_viz import generate_report
@@ -219,22 +219,8 @@ def main() -> None:
                 system_kw=system_kw,
                 detailed=True,
             )
-            # Build row for the report (mirrors solar_fetch.main)
-            row = quote.pvwatts_result.to_dict()
-            row.update({
-                "site_id":            quote.site_result.site_id,
-                "address_label":      f"{name}, {state} {zip_code}",
-                "lat":                quote.geocode_result.lat,
-                "lon":                quote.geocode_result.lon,
-                "system_capacity_kw": quote.system_kw_used,
-                "state":              state,
-                "zip_code":           zip_code,
-                "azimuth":            180.0,
-                "tilt":               abs(quote.geocode_result.lat),
-                "losses":             14.0,
-                "tts_recent_sample_size":     1000,
-                "tts_median_price_per_watt":  STATE_PPW.get(state, 3.50),
-            })
+            row = viz_row_from_quote(quote)
+            row["address_label"] = f"{name}, {state} {zip_code}"
             generate_report([quote.site_result], str(out), rows=[row], quote=quote)
 
             card = extract_card(slug, name, state, zip_code, note, quote)

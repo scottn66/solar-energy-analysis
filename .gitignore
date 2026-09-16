@@ -70,6 +70,12 @@ _deploy/
 # Word-doc copies of generated docs (the .md is the source of truth)
 docs/*.docx
 
+# Generated ZIP lookup (regenerable via build_heatmap.py)
+data/ca_zips.json
+
+# Duplicate/typo class export of the paper
+paper/Data201Solarpannel_Dataset.pdf
+
 # DuckDB warehouse — built by ETL, can be regenerated.
 # If you want teammates to pull a pre-built snapshot, comment these lines out
 # and commit the .duckdb file directly.
